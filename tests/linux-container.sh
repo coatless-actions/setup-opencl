@@ -30,6 +30,7 @@ platform_args=()
 "${engine}" run --rm ${platform_args[@]+"${platform_args[@]}"} \
     -v "$(pwd):/work:ro" -w /work \
     -e SE_RUNTIME="${runtime}" \
+    -e EXPECTATION="${expectation}" \
     "${image}" bash -c '
         set -euo pipefail
         apt-get update -qq
@@ -41,5 +42,5 @@ platform_args=()
         export OCL_ICD_VENDORS="$(printf "%s\n" "${out}" | sed -n "s/^icd-vendors-path=//p")"
         cd /tmp && cp -r /work/tests .
         mkdir -p scripts && cp /work/scripts/probe.c scripts/
-        tests/probe-contract.sh '"${expectation}"'
+        tests/probe-contract.sh "${EXPECTATION}"
     '

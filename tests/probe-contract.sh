@@ -12,7 +12,7 @@
 
 set -uo pipefail
 
-expectation="${1:->=1}"
+expectation="${1->=1}"
 case "${expectation}" in
     '='*)
         mode="exact"
