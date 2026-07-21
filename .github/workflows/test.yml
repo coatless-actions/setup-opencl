@@ -284,3 +284,37 @@ jobs:
             exit 1
           fi
           echo "Correctly rejected: ${SE_REASON} (runtime=${SE_RUNTIME} on ${{ matrix.os }})"
+
+  # The README promises a caller's own explicit setting of any exported
+  # variable always wins over the action's export. This is the only leg
+  # that exercises that guarantee: it sets OPENCL_LIBS at job level -- the
+  # process environment set_env's `${!1+set}` check reads -- before the
+  # action runs, then asserts the sentinel survived. runtime: none and
+  # verify: false keep this fast and independent of any real toolchain,
+  # since the point under test is the environment-export contract, not a
+  # working device.
+  env-idempotency:
+    name: a caller's OPENCL_LIBS wins over the action's export
+    runs-on: ubuntu-24.04
+    env:
+      OPENCL_LIBS: sentinel-value
+
+    steps:
+      - name: Checkout the action
+        uses: actions/checkout@v6
+
+      - name: Set up OpenCL
+        uses: ./
+        with:
+          runtime: none
+          verify: 'false'
+
+      - name: Confirm the caller's OPENCL_LIBS was not overwritten
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${OPENCL_LIBS}" != "sentinel-value" ]; then
+            echo "::error::Expected OPENCL_LIBS to remain 'sentinel-value' (the caller's own job-level setting), got '${OPENCL_LIBS}'"
+            exit 1
+          fi
+          echo "OPENCL_LIBS correctly preserved the caller's own value: ${OPENCL_LIBS}"
