@@ -144,20 +144,33 @@ if ($Runtime -eq 'none') {
 # ---------- Intel CPU runtime ----------
 
 $rtDir = Join-Path $InstallDir 'oclcpuexp'
-$icd   = Join-Path $rtDir 'intelocl64.dll'
 
-if (-not (Test-Path $icd)) {
+# The archive layout has moved between releases; locate the vendor ICD
+# rather than assuming a fixed path. This is the exact mistake that left
+# RcppBandicoot registering the loader instead of the vendor.
+#
+# This search doubles as the cache gate: it must run *before* deciding
+# whether to download, not after. A fixed-path Test-Path here would go
+# stale the moment the archive nests the DLL a level deeper (say under
+# x64\) -- every cache hit would then look like a miss, re-downloading the
+# 110 MB archive on every single run with no error, since the fallback
+# search below would still find it and mask the regression. Searching
+# first means one code path decides where the ICD is, and the cache gate
+# uses that same answer.
+$found = if (Test-Path $rtDir) {
+    Get-ChildItem -Path $rtDir -Recurse -Filter 'intelocl64.dll' |
+        Select-Object -First 1
+} else {
+    $null
+}
+
+if (-not $found) {
     $rtZip = Join-Path $InstallDir 'oclcpuexp.zip'
     Invoke-WebRequest -Uri $RuntimeUrl -OutFile $rtZip
     New-Item -ItemType Directory -Force -Path $rtDir | Out-Null
     Expand-Archive -Path $rtZip -DestinationPath $rtDir -Force
     Remove-Item -Force $rtZip
-}
 
-if (-not (Test-Path $icd)) {
-    # The archive layout has moved between releases; locate the vendor ICD
-    # rather than assuming. This is the exact mistake that left
-    # RcppBandicoot registering the loader instead of the vendor.
     $found = Get-ChildItem -Path $rtDir -Recurse -Filter 'intelocl64.dll' |
              Select-Object -First 1
     if (-not $found) {
@@ -165,8 +178,9 @@ if (-not (Test-Path $icd)) {
         Write-Output "The archive layout may have changed in release $RuntimeTag."
         exit 1
     }
-    $icd = $found.FullName
 }
+
+$icd = $found.FullName
 
 Emit 'icd-vendors-path' ($icd -replace '\\', '/')
 Emit 'icd-filenames'    $icd
