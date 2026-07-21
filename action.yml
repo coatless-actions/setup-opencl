@@ -139,11 +139,14 @@ runs:
         esac
         # The install scripts also print package-manager chatter (apt-get,
         # brew) to stdout alongside their key=value contract, so only lines
-        # matching a known key are safe to forward to GITHUB_OUTPUT.
+        # that look like a well-formed key=value pair are safe to forward to
+        # GITHUB_OUTPUT. This pattern -- rather than a fixed list of key
+        # names -- is what lets a future install script add new keys without
+        # them being silently dropped here.
         output="$(bash "${GITHUB_ACTION_PATH}/scripts/${script}")"
         printf '%s\n' "${output}"
         printf '%s\n' "${output}" | grep -E \
-          '^(opencl-root|opencl-include-dir|opencl-library|opencl-cppflags|opencl-libs|icd-vendors-path|runtime-name|sdkroot)=' \
+          '^[a-z][a-z0-9-]*=' \
           >> "$GITHUB_OUTPUT"
 
     - name: Export the OpenCL environment
