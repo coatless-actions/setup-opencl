@@ -14,6 +14,12 @@
     Intel's registrationcenter URLs embed opaque GUIDs with no derivable
     pattern, making "latest" impossible; intel/llvm release tags are
     enumerable, which is what makes the version bump automatable.
+
+    The pinned default's asset file name is known ahead of time (it is
+    recorded alongside the tag below), so the default path makes no network
+    call. An overriding 'version' does not carry a known build number, so
+    that case resolves the actual asset name from the GitHub Releases API
+    for the given tag before building the download URL.
 #>
 
 [CmdletBinding()]
@@ -26,18 +32,57 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Pinned defaults. update-runtime.yml opens a PR when a newer tag appears.
-$SdkVersion     = 'v2026.05.29'
-$SdkUrl         = "https://github.com/KhronosGroup/OpenCL-SDK/releases/download/$SdkVersion/OpenCL-SDK-$SdkVersion-Win-x64.zip"
-$RuntimeTag     = '2026-WW28'
-$RuntimeFile    = 'win-oclcpuexp-2026.22.6.1.17_160000_rel.zip'
-$RuntimeUrl     = "https://github.com/intel/llvm/releases/download/$RuntimeTag/$RuntimeFile"
+$SdkVersion  = 'v2026.05.29'
+$SdkUrl      = "https://github.com/KhronosGroup/OpenCL-SDK/releases/download/$SdkVersion/OpenCL-SDK-$SdkVersion-Win-x64.zip"
+$RuntimeTag  = '2026-WW28'
+$RuntimeFile = 'win-oclcpuexp-2026.22.6.1.17_160000_rel.zip'
 
 if (-not $Runtime) { $Runtime = 'intel' }
-if ($Version)      { $RuntimeTag = $Version }
 
 function Emit([string] $Key, [string] $Value) {
     Write-Output "$Key=$Value"
 }
+
+# Resolves the win-oclcpuexp asset name for an overriding release tag. The
+# pinned default's build number can't be assumed for an arbitrary tag --
+# that was the bug: reordering alone still hardcoded $RuntimeFile, so any
+# tag other than the pinned one would 404. Query the release's own asset
+# list instead of guessing.
+function Resolve-RuntimeAssetName([string] $Tag) {
+    $headers = @{ 'Accept' = 'application/vnd.github+json' }
+    if ($env:GITHUB_TOKEN) {
+        # Avoids anonymous rate limiting on busy runners; works without it too.
+        $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN"
+    }
+
+    $apiUrl = "https://api.github.com/repos/intel/llvm/releases/tags/$Tag"
+    try {
+        $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers
+    } catch {
+        Write-Output "::error::intel/llvm has no release tagged '$Tag' (or the GitHub API request failed: $($_.Exception.Message))"
+        Write-Output "Check https://github.com/intel/llvm/releases for a valid tag, e.g. '2026-WW28'."
+        exit 1
+    }
+
+    $asset = $release.assets |
+             Where-Object { $_.name -like 'win-oclcpuexp*' -and $_.name -like '*.zip' } |
+             Select-Object -First 1
+    if (-not $asset) {
+        Write-Output "::error::intel/llvm release '$Tag' has no asset matching 'win-oclcpuexp*.zip'"
+        Write-Output "Check the assets listed at https://github.com/intel/llvm/releases/tag/$Tag."
+        exit 1
+    }
+
+    return $asset.name
+}
+
+if ($Version) {
+    # Only reassign after a successful resolution -- never fall back to the
+    # pinned default silently on a bad tag.
+    $RuntimeTag  = $Version
+    $RuntimeFile = Resolve-RuntimeAssetName -Tag $RuntimeTag
+}
+$RuntimeUrl = "https://github.com/intel/llvm/releases/download/$RuntimeTag/$RuntimeFile"
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 

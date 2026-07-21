@@ -167,6 +167,9 @@ runs:
       env:
         SE_RUNTIME: ${{ steps.resolve.outputs.resolved-runtime }}
         SE_VERSION: ${{ inputs.version }}
+        # Only used when 'version' is set, to resolve the release's asset
+        # name without hitting the GitHub API's anonymous rate limit.
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         & "$env:GITHUB_ACTION_PATH\scripts\install-windows.ps1" |
           Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
