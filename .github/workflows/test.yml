@@ -45,7 +45,11 @@ jobs:
           # ubuntu-24.04's PoCL reports fp64=true, so this leg proves the
           # input reaches the action and does not fire a false positive.
           - { os: ubuntu-24.04,      runtime: auto, verify: 'true',  require-fp64: 'true',  expect: '>=1' }
-          - { os: windows-2025,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
+          # Windows has never had an fp64 assertion of its own -- it was only
+          # proven transitively via the ubuntu-24.04 leg above. windows-2025
+          # reports fp64=true (Intel's CPU runtime), so this proves the
+          # input reaches the action on Windows too.
+          - { os: windows-2025,      runtime: auto, verify: 'true',  require-fp64: 'true',  expect: '>=1' }
           - { os: windows-2022,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           - { os: windows-2025,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
           # cache has no coverage otherwise: every leg above either omits it
