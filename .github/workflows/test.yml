@@ -25,13 +25,13 @@ jobs:
           # 'expect' is an assertion, not a floor: ">=1" for runtimes that must
           # produce a device, "=0" for headers-only. A ">=0" form is deliberately
           # absent -- device-count is unsigned, so it would assert nothing.
-          - { os: ubuntu-24.04,      runtime: auto, verify: 'true',  expect: '>=1' }
-          - { os: ubuntu-24.04-arm,  runtime: auto, verify: 'true',  expect: '>=1' }
-          - { os: macos-latest,      runtime: auto, verify: 'true',  expect: '>=1' }
+          - { os: ubuntu-24.04,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
+          - { os: ubuntu-24.04-arm,  runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
+          - { os: macos-latest,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           # Headers and loader only. A device appearing here is a real failure:
           # it means the runtime was installed when it should not have been.
-          - { os: ubuntu-24.04,      runtime: none, verify: 'true',  expect: '=0' }
-          - { os: macos-latest,      runtime: none, verify: 'true',  expect: '=0' }
+          - { os: ubuntu-24.04,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
+          - { os: macos-latest,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
           # Confirmed in CI (not reproducible on bare-metal Apple Silicon,
           # which reports one device): Apple's OpenCL.framework enumerates a
           # platform but returns zero devices on hosted Apple Silicon
@@ -39,7 +39,12 @@ jobs:
           # 'runtime: apple' must also set here, since the action's own
           # default 'verify: true' would otherwise fail the job on the
           # expected zero-device count.
-          - { os: macos-latest,      runtime: apple, verify: 'false', expect: '=0' }
+          - { os: macos-latest,      runtime: apple, verify: 'false', require-fp64: 'false', expect: '=0' }
+          # require-fp64 has no coverage otherwise: no leg above sets it, so
+          # this public input has never executed in either direction.
+          # ubuntu-24.04's PoCL reports fp64=true, so this leg proves the
+          # input reaches the action and does not fire a false positive.
+          - { os: ubuntu-24.04,      runtime: auto, verify: 'true',  require-fp64: 'true',  expect: '>=1' }
 
     steps:
       - name: Checkout the action
@@ -51,6 +56,7 @@ jobs:
         with:
           runtime: ${{ matrix.runtime }}
           verify: ${{ matrix.verify }}
+          require-fp64: ${{ matrix.require-fp64 }}
 
       - name: Confirm the action reported a device
         shell: bash
