@@ -88,6 +88,10 @@ Apple's `OpenCL.framework` enumerates a platform on hosted `macos-latest` runner
         runtime: intel
         version: '2026-WW22'
 
+## Requirements
+
+This action assumes a C compiler is on `PATH`: it compiles a small probe program to check for a device, even when `runtime` is `none` and `verify` is `'false'`. On Linux, it also assumes a Debian-family package manager (`apt-get`). Both are preinstalled on every GitHub-hosted `ubuntu-*`, `macos-*`, and `windows-*` runner image, but neither is guaranteed inside a `container:` job, which is common for C++ and R projects and still runs on a GitHub-hosted runner. Use a Debian-family container image (e.g. `ubuntu:24.04`) with a C compiler installed — `build-essential` on Debian-family Linux, the Xcode Command Line Tools (`xcode-select --install`) on macOS — or install one yourself before this step. Missing either fails the job with an `::error::` and remediation, not a bare `command not found`.
+
 ## Supported runners
 
 | Runner | Runtime | Support |

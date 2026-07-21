@@ -423,6 +423,19 @@ runs:
       run: |
         set -euo pipefail
 
+        # This step compiles probe.c unconditionally, even for a headers-only
+        # 'runtime: none' with 'verify: false', so a C compiler is a hard
+        # dependency regardless of inputs. GitHub-hosted runners always have
+        # one, but a `container:` job -- common for C++ and R projects, and
+        # still a GitHub-hosted runner -- may not. Fail with this action's
+        # usual ::error:: + remediation contract instead of a bare
+        # "cc: command not found" from the compiler invocation below.
+        if ! command -v cc >/dev/null 2>&1; then
+          echo "::error::No C compiler ('cc') found on PATH"
+          echo "Install one before this step: 'build-essential' on Debian-family Linux (e.g. inside a 'container:' job, 'apt-get install -y build-essential'), or the Xcode Command Line Tools on macOS ('xcode-select --install')."
+          exit 1
+        fi
+
         probe_dir="$(mktemp -d)"
         # shellcheck disable=SC2086
         cc -o "${probe_dir}/probe" "${GITHUB_ACTION_PATH}/scripts/probe.c" \

@@ -15,6 +15,25 @@
 
 set -euo pipefail
 
+# This script assumes a Debian-family image (apt-get, dpkg-architecture). A
+# `container:` job -- common for C++ and R projects, and still a
+# GitHub-hosted runner -- may use a non-Debian base, where this would
+# otherwise fail with a bare "apt-get: command not found" from the first
+# apt-get invocation below.
+#
+# Written to stderr, not stdout: action.yml's "Install OpenCL" step captures
+# this script's whole stdout via `output="$(bash ... "${script}")"` and only
+# prints it back out (and thus into the job log) after that command
+# substitution succeeds. Under `set -e`, a non-zero exit here aborts that
+# step immediately, before the capture is ever replayed -- so a stdout-only
+# message would reach neither the log nor an annotation, silently, on
+# exactly the failure path it exists to report loudly.
+if ! command -v apt-get >/dev/null 2>&1; then
+    echo "::error::apt-get not found" >&2
+    echo "This install script supports Debian-family Linux images only. Use a Debian-family base image (e.g. 'ubuntu:24.04') for 'container:' jobs, or install OpenCL headers, an ICD loader, and a CPU runtime yourself before this step." >&2
+    exit 1
+fi
+
 runtime="${SE_RUNTIME:-pocl}"
 
 emit() { printf '%s=%s\n' "$1" "$2"; }
