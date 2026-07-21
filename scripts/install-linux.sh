@@ -27,11 +27,15 @@ fi
 sudo_cmd=""
 [ "$(id -u)" -ne 0 ] && sudo_cmd="sudo"
 
-# DEBIAN_FRONTEND keeps tzdata and friends from blocking on a prompt.
+# DEBIAN_FRONTEND keeps tzdata and friends from blocking on a prompt. It is
+# passed through `env` after sudo_cmd, not set on this process, because
+# Ubuntu's default sudoers uses env_reset and does not env_keep it: setting
+# it here would only affect the caller's environment and never reach
+# apt-get, silently defeating the suppression.
 # shellcheck disable=SC2086
-DEBIAN_FRONTEND=noninteractive ${sudo_cmd} apt-get update -qq
+${sudo_cmd} env DEBIAN_FRONTEND=noninteractive apt-get update -qq
 # shellcheck disable=SC2086
-DEBIAN_FRONTEND=noninteractive ${sudo_cmd} apt-get install -y -qq \
+${sudo_cmd} env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     --no-install-recommends ${packages}
 
 # ocl-icd ships the loader under the multiarch triplet directory. Resolve it
