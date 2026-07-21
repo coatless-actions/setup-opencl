@@ -137,7 +137,14 @@ runs:
             exit 1
             ;;
         esac
-        bash "${GITHUB_ACTION_PATH}/scripts/${script}" | tee -a "$GITHUB_OUTPUT"
+        # The install scripts also print package-manager chatter (apt-get,
+        # brew) to stdout alongside their key=value contract, so only lines
+        # matching a known key are safe to forward to GITHUB_OUTPUT.
+        output="$(bash "${GITHUB_ACTION_PATH}/scripts/${script}")"
+        printf '%s\n' "${output}"
+        printf '%s\n' "${output}" | grep -E \
+          '^(opencl-root|opencl-include-dir|opencl-library|opencl-cppflags|opencl-libs|icd-vendors-path|runtime-name|sdkroot)=' \
+          >> "$GITHUB_OUTPUT"
 
     - name: Export the OpenCL environment
       shell: bash
