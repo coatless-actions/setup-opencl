@@ -308,10 +308,16 @@ runs:
       run: |
         set -euo pipefail
 
-        # Idempotent: a caller's explicit setting always wins.
+        # Idempotent: a caller's explicit setting always wins. A skip here is
+        # silent otherwise -- a stale value inherited from an earlier step
+        # (e.g. an old OPENCL_LIBS left behind by a previous job) would then
+        # steer this job's build with no trace of why. Name the variable so
+        # that trail exists.
         set_env() {
           if [ -z "${!1+set}" ]; then
             printf '%s=%s\n' "$1" "$2" >> "$GITHUB_ENV"
+          else
+            echo "::notice::${1} is already set; keeping the caller's existing value instead of exporting the action's"
           fi
         }
 
