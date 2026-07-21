@@ -89,14 +89,29 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 # ---------- headers and ICD loader ----------
 
 $sdkDir = Join-Path $InstallDir 'sdk'
-if (-not (Test-Path (Join-Path $sdkDir 'include\CL\cl.h'))) {
+
+# Check every file this action depends on downstream (headers for
+# consumers, OpenCL.lib for the link line this action exports, clinfo.exe
+# for the Windows probe step) -- a tree missing any one of them is not a
+# complete cache hit and must be re-extracted, not silently used as-is.
+function Test-SdkComplete([string] $Dir) {
+    (Test-Path (Join-Path $Dir 'include\CL\cl.h')) -and
+    (Test-Path (Join-Path $Dir 'lib\OpenCL.lib')) -and
+    (Test-Path (Join-Path $Dir 'bin\clinfo.exe'))
+}
+
+if (-not (Test-SdkComplete $sdkDir)) {
     $sdkZip = Join-Path $InstallDir 'sdk.zip'
     Invoke-WebRequest -Uri $SdkUrl -OutFile $sdkZip
     Expand-Archive -Path $sdkZip -DestinationPath $InstallDir -Force
     $extracted = Get-ChildItem -Path $InstallDir -Directory |
                  Where-Object { $_.Name -like 'OpenCL-SDK-*' } |
                  Select-Object -First 1
-    if (-not $extracted) { throw "OpenCL SDK archive did not contain the expected directory" }
+    if (-not $extracted) {
+        Write-Output "::error::OpenCL SDK archive did not contain the expected directory"
+        Write-Output "The archive layout may have changed for SDK release $SdkVersion."
+        exit 1
+    }
     if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
     Move-Item -Path $extracted.FullName -Destination $sdkDir
     Remove-Item -Force $sdkZip

@@ -239,9 +239,10 @@ runs:
     - name: Register the vendor ICD (Windows)
       if: runner.os == 'Windows' && steps.install-windows.outputs.runtime-name != 'none'
       shell: pwsh
+      env:
+        SE_ICD_FILENAMES: ${{ steps.install-windows.outputs.icd-filenames }}
       run: |
-        & "$env:GITHUB_ACTION_PATH\scripts\register-icd.ps1" `
-            -IcdPath "${{ steps.install-windows.outputs.icd-filenames }}"
+        & "$env:GITHUB_ACTION_PATH\scripts\register-icd.ps1" -IcdPath "$env:SE_ICD_FILENAMES"
 
     # Merges the per-OS install outputs into one canonical set. This is a shell
     # step, not a ${{ a || b }} expression, because Actions' || is truthiness
@@ -348,9 +349,10 @@ runs:
         SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
         SE_VERIFY: ${{ inputs.verify }}
         SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
+        SE_LOADER_BIN_DIR: ${{ steps.install-windows.outputs.loader-bin-dir }}
       run: |
         $ErrorActionPreference = 'Stop'
-        $clinfo = Join-Path "${{ steps.install-windows.outputs.loader-bin-dir }}" 'clinfo.exe'
+        $clinfo = Join-Path $env:SE_LOADER_BIN_DIR 'clinfo.exe'
 
         # clinfo's exit code is unusable: main() tolerates
         # CL_PLATFORM_NOT_FOUND_KHR and unconditionally returns 0. Gate on
@@ -482,9 +484,14 @@ runs:
       run: |
         set -euo pipefail
         if [ "${RUNNER_OS}" = "Windows" ]; then side="WIN"; else side="NIX"; fi
-        {
-          printf 'device-count=%s\n'     "$(eval "printf '%s' \"\${SE_${side}_COUNT-}\"")"
-          printf 'device-name=%s\n'      "$(eval "printf '%s' \"\${SE_${side}_NAME-}\"")"
-          printf 'platform-version=%s\n' "$(eval "printf '%s' \"\${SE_${side}_PLATFORM-}\"")"
-          printf 'fp64=%s\n'             "$(eval "printf '%s' \"\${SE_${side}_FP64-}\"")"
-        } >> "$GITHUB_OUTPUT"
+
+        # Indirect expansion (${!var-}), same idiom as "Collect install
+        # results" -- easier to audit than eval, and identically preserves a
+        # legitimate 0/false from a genuinely unset variable.
+        for pair in COUNT:device-count NAME:device-name \
+                    PLATFORM:platform-version FP64:fp64; do
+          key="${pair%%:*}"
+          outname="${pair#*:}"
+          var="SE_${side}_${key}"
+          printf '%s=%s\n' "${outname}" "${!var-}"
+        done >> "$GITHUB_OUTPUT"
