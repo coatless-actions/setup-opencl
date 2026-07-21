@@ -1,0 +1,217 @@
+name: 'Setup OpenCL'
+description: 'Install OpenCL headers, an ICD loader, and a working CPU device on GitHub-hosted runners'
+author: 'James J. Balamuta'
+
+branding:
+  icon: 'cpu'
+  color: 'blue'
+
+inputs:
+  runtime:
+    description: 'OpenCL runtime to install: pocl, intel, apple, none, or auto (default: derived from runner.os)'
+    required: false
+    default: 'auto'
+  version:
+    description: 'Pin the runtime version. Only honored for runtime "intel" on Windows; ignored with a warning elsewhere (default: the tested version for this runner)'
+    required: false
+    default: ''
+  verify:
+    description: 'Fail the job when no OpenCL device is found ("true" or "false"). Never fatal when runtime is "none"'
+    required: false
+    default: 'true'
+  require-fp64:
+    description: 'Also fail when the device does not support double precision ("true" or "false")'
+    required: false
+    default: 'false'
+  cache:
+    description: 'Cache downloads and package archives ("true" or "false"). A no-op on runners with nothing worth caching'
+    required: false
+    default: 'true'
+
+outputs:
+  opencl-root:
+    description: 'Root directory of the installed OpenCL SDK'
+    value: ${{ steps.install.outputs.opencl-root }}
+  opencl-include-dir:
+    description: 'Directory containing CL/cl.h'
+    value: ${{ steps.install.outputs.opencl-include-dir }}
+  opencl-library:
+    description: 'Full path to the ICD loader library'
+    value: ${{ steps.install.outputs.opencl-library }}
+  icd-vendors-path:
+    description: 'Directory or file the ICD loader was pointed at'
+    value: ${{ steps.install.outputs.icd-vendors-path }}
+  runtime-name:
+    description: 'Runtime actually installed: pocl, intel-cpu, apple, or none'
+    value: ${{ steps.install.outputs.runtime-name }}
+  platform-version:
+    description: 'CL_PLATFORM_VERSION of the platform providing the first device'
+    value: ${{ steps.verify.outputs.platform-version }}
+  device-name:
+    description: 'CL_DEVICE_NAME of the first device found'
+    value: ${{ steps.verify.outputs.device-name }}
+  device-count:
+    description: 'Number of OpenCL devices found. Zero is a valid value, not an error signal'
+    value: ${{ steps.verify.outputs.device-count }}
+  fp64:
+    description: 'Whether the first device reports double-precision support ("true" or "false")'
+    value: ${{ steps.verify.outputs.fp64 }}
+
+runs:
+  using: 'composite'
+  steps:
+    # The runner does not enforce input contracts (actions/runner#1070) and
+    # inputs have no type (actions/runner#2238), so validate by hand.
+    - name: Validate inputs and resolve the runtime
+      id: resolve
+      shell: bash
+      env:
+        SE_RUNTIME: ${{ inputs.runtime }}
+        SE_VERSION: ${{ inputs.version }}
+        SE_VERIFY: ${{ inputs.verify }}
+        SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
+        SE_OS: ${{ runner.os }}
+        SE_ARCH: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+
+        case "${SE_RUNTIME}" in
+          auto|pocl|intel|apple|none) ;;
+          *)
+            echo "::error::Unknown runtime '${SE_RUNTIME}'"
+            echo "Valid values are: auto, pocl, intel, apple, none."
+            exit 1
+            ;;
+        esac
+
+        for name in SE_VERIFY SE_REQUIRE_FP64; do
+          value="${!name}"
+          if [ "${value}" != "true" ] && [ "${value}" != "false" ]; then
+            echo "::error::Input ${name#SE_} must be \"true\" or \"false\", got '${value}'"
+            exit 1
+          fi
+        done
+
+        if [ "${SE_OS}" = "Windows" ] && [ "${SE_ARCH}" = "ARM64" ]; then
+          echo "::error::No OpenCL CPU runtime exists for Windows on ARM64"
+          echo "Intel's oclcpuexp is x86-64 only, conda-forge's PoCL is win-64 only, and MSYS2 has no PoCL. Use an x64 Windows runner."
+          exit 1
+        fi
+
+        resolved="${SE_RUNTIME}"
+        if [ "${resolved}" = "auto" ]; then
+          case "${SE_OS}" in
+            Linux|macOS) resolved="pocl" ;;
+            Windows)     resolved="intel" ;;
+            *)
+              echo "::error::Unsupported runner OS '${SE_OS}'"
+              echo "This action supports Linux, macOS, and Windows."
+              exit 1
+              ;;
+          esac
+        fi
+
+        if [ -n "${SE_VERSION}" ] && [ "${resolved}" != "intel" ]; then
+          echo "::warning::The 'version' input is only honored for runtime 'intel' on Windows; ignoring it for runtime '${resolved}'"
+        fi
+
+        echo "resolved-runtime=${resolved}" >> "$GITHUB_OUTPUT"
+
+        # The env context excludes variables inherited by the runner process,
+        # so ${{ env.ImageVersion }} expands to the empty string and would
+        # silently produce a cache key that never invalidates. Export it here.
+        echo "IMAGE_OS_VERSION=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+
+    - name: Install OpenCL
+      id: install
+      shell: bash
+      env:
+        SE_RUNTIME: ${{ steps.resolve.outputs.resolved-runtime }}
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}" in
+          Linux) script="install-linux.sh" ;;
+          macOS) script="install-macos.sh" ;;
+          *)
+            echo "::error::No install script for runner OS '${RUNNER_OS}'"
+            exit 1
+            ;;
+        esac
+        bash "${GITHUB_ACTION_PATH}/scripts/${script}" | tee -a "$GITHUB_OUTPUT"
+
+    - name: Export the OpenCL environment
+      shell: bash
+      env:
+        SE_CPPFLAGS: ${{ steps.install.outputs.opencl-cppflags }}
+        SE_LIBS: ${{ steps.install.outputs.opencl-libs }}
+        SE_ROOT: ${{ steps.install.outputs.opencl-root }}
+        SE_LIBRARY: ${{ steps.install.outputs.opencl-library }}
+        SE_INCLUDE_DIR: ${{ steps.install.outputs.opencl-include-dir }}
+        SE_ICD_VENDORS: ${{ steps.install.outputs.icd-vendors-path }}
+        SE_SDKROOT: ${{ steps.install.outputs.sdkroot }}
+      run: |
+        set -euo pipefail
+
+        # Idempotent: a caller's explicit setting always wins.
+        set_env() {
+          if [ -z "${!1+set}" ]; then
+            printf '%s=%s\n' "$1" "$2" >> "$GITHUB_ENV"
+          fi
+        }
+
+        set_env OPENCL_CPPFLAGS   "${SE_CPPFLAGS}"
+        set_env OPENCL_LIBS       "${SE_LIBS}"
+        set_env OpenCL_ROOT       "${SE_ROOT}"
+        set_env OpenCL_LIBRARY    "${SE_LIBRARY}"
+        set_env OpenCL_INCLUDE_DIR "${SE_INCLUDE_DIR}"
+
+        if [ -n "${SE_ICD_VENDORS}" ]; then
+          set_env OCL_ICD_VENDORS "${SE_ICD_VENDORS}"
+        fi
+
+        # PoCL's LLVM cannot find system headers without SDKROOT.
+        if [ -n "${SE_SDKROOT:-}" ]; then
+          set_env SDKROOT "${SE_SDKROOT}"
+        fi
+
+    - name: Probe for an OpenCL device
+      id: verify
+      shell: bash
+      env:
+        SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
+        SE_VERIFY: ${{ inputs.verify }}
+        SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
+      run: |
+        set -euo pipefail
+
+        probe_dir="$(mktemp -d)"
+        # shellcheck disable=SC2086
+        cc -o "${probe_dir}/probe" "${GITHUB_ACTION_PATH}/scripts/probe.c" \
+           ${OPENCL_CPPFLAGS} ${OPENCL_LIBS}
+
+        output="$("${probe_dir}/probe")"
+        printf '%s\n' "${output}"
+        printf '%s\n' "${output}" >> "$GITHUB_OUTPUT"
+
+        count="$(printf '%s\n' "${output}" | sed -n 's/^device-count=//p')"
+        fp64="$(printf '%s\n' "${output}" | sed -n 's/^fp64=//p')"
+
+        # Requesting a headers-only install and then failing for having no
+        # device would be self-contradictory, so verification is never fatal
+        # when runtime is "none".
+        if [ "${SE_RESOLVED}" = "none" ]; then
+          echo "::notice::Installed headers and loader only; ${count} device(s) found"
+          exit 0
+        fi
+
+        if [ "${SE_VERIFY}" = "true" ] && [ "${count}" -eq 0 ]; then
+          echo "::error::No OpenCL device found on this runner"
+          echo "Set 'runtime' to a specific value, or set 'verify' to 'false' if a device is not required."
+          exit 1
+        fi
+
+        if [ "${SE_REQUIRE_FP64}" = "true" ] && [ "${fp64}" != "true" ]; then
+          echo "::error::The OpenCL device does not support double precision"
+          echo "Set 'require-fp64' to 'false' if single precision is sufficient."
+          exit 1
+        fi
