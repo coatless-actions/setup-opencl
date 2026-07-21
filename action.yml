@@ -145,6 +145,27 @@ runs:
         # silently produce a cache key that never invalidates. Export it here.
         echo "IMAGE_OS_VERSION=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_ENV"
 
+        # The Windows cache key must invalidate whenever the pinned SDK/
+        # runtime versions in install-windows.ps1 change, or a cache hit
+        # would keep serving the old artifact even after those pins are
+        # bumped. hashFiles() only sees files under github.workspace (the
+        # caller's checkout), never github.action_path (this action's own
+        # checkout), so the hash is computed here and exposed as an output
+        # instead. Portable across the three runner OSes' bash: sha256sum
+        # (Linux, and present in Git for Windows), shasum (macOS, which has
+        # no sha256sum by default), then cksum as a last-resort fallback
+        # that is virtually universal -- the key only needs to change when
+        # the file does, not be cryptographically strong.
+        script="${GITHUB_ACTION_PATH}/scripts/install-windows.ps1"
+        if command -v sha256sum >/dev/null 2>&1; then
+          script_hash="$(sha256sum "${script}" | cut -d' ' -f1)"
+        elif command -v shasum >/dev/null 2>&1; then
+          script_hash="$(shasum -a 256 "${script}" | cut -d' ' -f1)"
+        else
+          script_hash="$(cksum "${script}" | cut -d' ' -f1)"
+        fi
+        echo "script-hash=${script_hash}" >> "$GITHUB_OUTPUT"
+
     # Only Windows has a download large enough to be worth caching: the
     # oclcpuexp archive is roughly 110 MB. Linux apt archives and macOS
     # bottles are fast enough that caching them is not yet justified.
@@ -153,7 +174,7 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}\opencl
-        key: opencl-${{ runner.os }}-${{ runner.arch }}-${{ env.IMAGE_OS_VERSION }}-${{ steps.resolve.outputs.resolved-runtime }}-${{ inputs.version }}
+        key: opencl-${{ runner.os }}-${{ runner.arch }}-${{ env.IMAGE_OS_VERSION }}-${{ steps.resolve.outputs.resolved-runtime }}-${{ inputs.version }}-${{ steps.resolve.outputs.script-hash }}
 
     - name: Install OpenCL
       id: install
