@@ -215,8 +215,26 @@ runs:
         # name without hitting the GitHub API's anonymous rate limit.
         GITHUB_TOKEN: ${{ github.token }}
       run: |
-        & "$env:GITHUB_ACTION_PATH\scripts\install-windows.ps1" |
-          Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
+        # The install script's stdout also carries ::error:: diagnostics and
+        # remediation prose, not just its key=value contract, so only lines
+        # that look like a well-formed key=value pair are safe to forward to
+        # GITHUB_OUTPUT -- otherwise a diagnostic line poisons the file and
+        # the runner rejects it with its own "Invalid format" error, burying
+        # the real one. This mirrors the non-Windows install step's grep
+        # filter. The full stream still reaches the job log via Write-Output.
+        & "$env:GITHUB_ACTION_PATH\scripts\install-windows.ps1" | ForEach-Object {
+          Write-Output $_
+          if ($_ -match '^[a-z][a-z0-9-]*=') {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value $_
+          }
+        }
+        # install-windows.ps1's own `exit 1` only ends its own scope, not
+        # this wrapper's -- propagate its exit code explicitly rather than
+        # relying on it leaking through the malformed-output path that this
+        # step exists to close off.
+        if ($LASTEXITCODE) {
+          exit $LASTEXITCODE
+        }
 
     - name: Register the vendor ICD (Windows)
       if: runner.os == 'Windows' && steps.install-windows.outputs.runtime-name != 'none'
