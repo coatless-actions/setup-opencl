@@ -25,13 +25,13 @@ jobs:
           # 'expect' is an assertion, not a floor: ">=1" for runtimes that must
           # produce a device, "=0" for headers-only. A ">=0" form is deliberately
           # absent -- device-count is unsigned, so it would assert nothing.
-          - { os: ubuntu-24.04,      runtime: auto, expect: '>=1' }
-          - { os: ubuntu-24.04-arm,  runtime: auto, expect: '>=1' }
-          - { os: macos-latest,      runtime: auto, expect: '>=1' }
+          - { os: ubuntu-24.04,      runtime: auto, verify: true,  expect: '>=1' }
+          - { os: ubuntu-24.04-arm,  runtime: auto, verify: true,  expect: '>=1' }
+          - { os: macos-latest,      runtime: auto, verify: true,  expect: '>=1' }
           # Headers and loader only. A device appearing here is a real failure:
           # it means the runtime was installed when it should not have been.
-          - { os: ubuntu-24.04,      runtime: none, expect: '=0' }
-          - { os: macos-latest,      runtime: none, expect: '=0' }
+          - { os: ubuntu-24.04,      runtime: none, verify: true,  expect: '=0' }
+          - { os: macos-latest,      runtime: none, verify: true,  expect: '=0' }
           # Confirmed in CI (not reproducible on bare-metal Apple Silicon,
           # which reports one device): Apple's OpenCL.framework enumerates a
           # platform but returns zero devices on hosted Apple Silicon
@@ -50,7 +50,7 @@ jobs:
         uses: ./
         with:
           runtime: ${{ matrix.runtime }}
-          verify: ${{ matrix.verify || 'true' }}
+          verify: ${{ matrix.verify }}
 
       - name: Confirm the action reported a device
         shell: bash
