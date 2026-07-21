@@ -206,3 +206,55 @@ jobs:
               exit 1
               ;;
           esac
+
+  # The action validates and rejects four combinations, but until now none
+  # of the four had ever actually been exercised in CI: an unknown
+  # 'runtime', 'pocl'/'apple' on Windows, 'intel' on Linux/macOS, and
+  # Windows on ARM64. Each leg below passes exactly one invalid input and
+  # otherwise-valid ones, so the resolve step in action.yml can only reach
+  # this leg's specific validation branch -- no other branch is reachable
+  # given the rest of the inputs are valid. That single-variable isolation
+  # is what "confirm it failed for the right reason" rests on here, since
+  # steps.<id>.outcome alone can only say *that* the action failed, not
+  # *why*. Every leg is cheap: the resolve step is the first step of the
+  # composite and runs no download or install, so a leg here fails in
+  # seconds even on the ARM64 Windows runner.
+  reject:
+    name: reject ${{ matrix.reason }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04,   reason: unknown-runtime,   runtime: bogus }
+          - { os: windows-2022,   reason: pocl-on-windows,   runtime: pocl }
+          - { os: windows-2022,   reason: apple-on-windows,  runtime: apple }
+          - { os: ubuntu-24.04,   reason: intel-on-linux,    runtime: intel }
+          - { os: macos-latest,   reason: intel-on-macos,    runtime: intel }
+          - { os: windows-11-arm, reason: windows-arm64,     runtime: auto }
+
+    steps:
+      - name: Checkout the action
+        uses: actions/checkout@v6
+
+      - name: Attempt setup with an invalid combination
+        id: attempt
+        continue-on-error: true
+        uses: ./
+        with:
+          runtime: ${{ matrix.runtime }}
+
+      - name: Confirm the action rejected this combination
+        shell: bash
+        env:
+          SE_OUTCOME: ${{ steps.attempt.outcome }}
+          SE_REASON: ${{ matrix.reason }}
+          SE_RUNTIME: ${{ matrix.runtime }}
+        run: |
+          set -euo pipefail
+          if [ "${SE_OUTCOME}" != "failure" ]; then
+            echo "::error::Expected the action to reject '${SE_REASON}' (runtime=${SE_RUNTIME} on ${{ matrix.os }}), but it succeeded"
+            exit 1
+          fi
+          echo "Correctly rejected: ${SE_REASON} (runtime=${SE_RUNTIME} on ${{ matrix.os }})"
