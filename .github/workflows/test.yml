@@ -48,6 +48,15 @@ jobs:
           - { os: windows-2025,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           - { os: windows-2022,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           - { os: windows-2025,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
+          # TEMPORARY: proves the version input actually reaches the
+          # download URL instead of the pinned default. 2026-WW22 is a real
+          # intel/llvm tag with a win-oclcpuexp asset, and its build number
+          # (2026.22.3.0.31_160000) differs from the pinned default
+          # (2026.22.6.1.17_160000), so "Resolved Intel CPU runtime
+          # release: tag=2026-WW22 asset=win-oclcpuexp-2026.22.3.0.31_160000_rel.zip"
+          # in the log is proof the override took effect, not just that the
+          # input was accepted. Remove after confirming in CI.
+          - { os: windows-2025,      runtime: intel, version: '2026-WW22', verify: 'true', require-fp64: 'false', expect: '>=1' }
 
     steps:
       - name: Checkout the action
@@ -58,6 +67,7 @@ jobs:
         uses: ./
         with:
           runtime: ${{ matrix.runtime }}
+          version: ${{ matrix.version }}
           verify: ${{ matrix.verify }}
           require-fp64: ${{ matrix.require-fp64 }}
 
@@ -125,6 +135,39 @@ jobs:
           PROGRAM
           cc -o consumer consumer.c ${OPENCL_CPPFLAGS} ${OPENCL_LIBS}
           ./consumer
+
+  # TEMPORARY: proves a nonexistent version tag fails with the project's
+  # ::error:: + remediation + exit 1 contract instead of a raw exception.
+  # continue-on-error on the step (not the job) masks the expected failure
+  # so the run stays green, while the assertion step confirms the step
+  # actually failed rather than silently succeeding or falling back to the
+  # pinned default. Remove after confirming in CI.
+  version-input-checks:
+    name: version input checks (temporary)
+    runs-on: windows-2025
+    steps:
+      - name: Checkout the action
+        uses: actions/checkout@v6
+
+      - name: Set up OpenCL with a nonexistent version tag
+        id: bad-version
+        continue-on-error: true
+        uses: ./
+        with:
+          runtime: intel
+          version: 'not-a-real-intel-llvm-tag-xyz'
+
+      - name: Confirm the bad version tag failed cleanly
+        shell: bash
+        env:
+          SE_OUTCOME: ${{ steps.bad-version.outcome }}
+        run: |
+          set -euo pipefail
+          echo "bad-version outcome = ${SE_OUTCOME}"
+          if [ "${SE_OUTCOME}" != "failure" ]; then
+            echo "::error::Expected the nonexistent version tag to fail the step, got outcome '${SE_OUTCOME}'"
+            exit 1
+          fi
 
   # Tier 2: public-preview and deprecated runner labels, plus the floating
   # *-latest labels. These have no SLA and change without notice, so they run
