@@ -312,7 +312,16 @@ jobs:
       - name: Checkout the action
         uses: actions/checkout@v6
 
+      # Expected to fail past the "Export the OpenCL environment" step: the
+      # action's own device probe unconditionally compiles against whatever
+      # OPENCL_LIBS currently holds (see probe step comments in action.yml),
+      # and a non-functional sentinel is not a valid linker flag. That
+      # failure happens strictly after set_env has already decided (and, by
+      # the previous commit, logged) that OPENCL_LIBS stays untouched, so it
+      # does not undermine the assertion below -- continue-on-error just
+      # keeps the job alive to check it.
       - name: Set up OpenCL
+        continue-on-error: true
         uses: ./
         with:
           runtime: none
