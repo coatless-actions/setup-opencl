@@ -93,12 +93,16 @@ $sdkDir = Join-Path $InstallDir 'sdk'
 
 # Check every file this action depends on downstream (headers for
 # consumers, OpenCL.lib for the link line this action exports, clinfo.exe
-# for the Windows probe step) -- a tree missing any one of them is not a
-# complete cache hit and must be re-extracted, not silently used as-is.
+# for the Windows probe step, and OpenCL.dll -- the loader itself -- which
+# the README documents as living alongside clinfo.exe in bin\ and which both
+# clinfo.exe and any consumer binary need on PATH at runtime) -- a tree
+# missing any one of them is not a complete cache hit and must be
+# re-extracted, not silently used as-is.
 function Test-SdkComplete([string] $Dir) {
     (Test-Path (Join-Path $Dir 'include\CL\cl.h')) -and
     (Test-Path (Join-Path $Dir 'lib\OpenCL.lib')) -and
-    (Test-Path (Join-Path $Dir 'bin\clinfo.exe'))
+    (Test-Path (Join-Path $Dir 'bin\clinfo.exe')) -and
+    (Test-Path (Join-Path $Dir 'bin\OpenCL.dll'))
 }
 
 if (-not (Test-SdkComplete $sdkDir)) {
