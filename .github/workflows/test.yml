@@ -159,20 +159,50 @@ jobs:
         with:
           runtime: ${{ matrix.runtime }}
 
-      - name: Confirm the action reported a device
+      # Mirrors the Tier-1 assertion exactly (see "Confirm the action
+      # reported a device" above): both need set -euo pipefail and both
+      # expectation forms, or a 'runtime: none' preview leg would silently
+      # misbehave and a malformed expectation would pass unnoticed.
+      - name: Confirm the action reported a device (preview)
         shell: bash
         env:
           SE_EXPECT: ${{ matrix.expect }}
           SE_DEVICE_COUNT: ${{ steps.setup.outputs.device-count }}
+          SE_DEVICE_NAME: ${{ steps.setup.outputs.device-name }}
           SE_PLATFORM_VERSION: ${{ steps.setup.outputs.platform-version }}
           SE_FP64: ${{ steps.setup.outputs.fp64 }}
+          SE_RUNTIME_NAME: ${{ steps.setup.outputs.runtime-name }}
         run: |
+          set -euo pipefail
+
+          echo "runtime-name    = ${SE_RUNTIME_NAME}"
           echo "device-count    = ${SE_DEVICE_COUNT}"
+          echo "device-name     = ${SE_DEVICE_NAME}"
           echo "platform-version= ${SE_PLATFORM_VERSION}"
           echo "fp64            = ${SE_FP64}"
 
-          want="${SE_EXPECT#>=}"
-          if [ -z "${SE_DEVICE_COUNT}" ] || [ "${SE_DEVICE_COUNT}" -lt "${want}" ]; then
-            echo "::error::Expected at least ${want} device(s), got '${SE_DEVICE_COUNT}'"
+          if [ -z "${SE_DEVICE_COUNT}" ]; then
+            echo "::error::The action produced no device-count output"
             exit 1
           fi
+
+          case "${SE_EXPECT}" in
+            '>='*)
+              want="${SE_EXPECT#>=}"
+              if [ "${SE_DEVICE_COUNT}" -lt "${want}" ]; then
+                echo "::error::Expected at least ${want} device(s), got ${SE_DEVICE_COUNT}"
+                exit 1
+              fi
+              ;;
+            '='*)
+              want="${SE_EXPECT#=}"
+              if [ "${SE_DEVICE_COUNT}" -ne "${want}" ]; then
+                echo "::error::Expected exactly ${want} device(s), got ${SE_DEVICE_COUNT}"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Malformed expectation '${SE_EXPECT}'; use '>=N' or '=N'"
+              exit 1
+              ;;
+          esac
