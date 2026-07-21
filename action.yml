@@ -235,7 +235,12 @@ runs:
           exit 1
         fi
 
-        if [ "${SE_REQUIRE_FP64}" = "true" ] && [ "${fp64}" != "true" ]; then
+        # A zero device count means there is nothing to check fp64 support
+        # on, and that is a distinct condition from "found a device that
+        # lacks it" -- do not let an explicit 'verify: false' (the correct
+        # caller response to a runtime with no device) get overridden by this
+        # gate finding a precision problem that was never actually observed.
+        if [ "${count}" -gt 0 ] && [ "${SE_REQUIRE_FP64}" = "true" ] && [ "${fp64}" != "true" ]; then
           echo "::error::The OpenCL device does not support double precision"
           echo "Set 'require-fp64' to 'false' if single precision is sufficient."
           exit 1
