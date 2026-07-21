@@ -25,7 +25,10 @@ if [ "${runtime}" = "apple" ]; then
     framework="${sdk_path}/System/Library/Frameworks/OpenCL.framework"
     emit opencl-root        "${framework}"
     emit opencl-include-dir "${framework}/Headers"
-    emit opencl-library     "/System/Library/Frameworks/OpenCL.framework/OpenCL"
+    # Emit the framework directory, not the binary inside it. On modern macOS,
+    # the binary lives only in the dyld shared cache; the framework directory is
+    # what CMake's find_library(OpenCL_LIBRARY) returns on macOS.
+    emit opencl-library     "/System/Library/Frameworks/OpenCL.framework"
     emit opencl-cppflags    "-DCL_SILENCE_DEPRECATION"
     emit opencl-libs        "-framework OpenCL"
     emit icd-vendors-path   ""
