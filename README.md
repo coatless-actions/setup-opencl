@@ -33,7 +33,7 @@ Installing headers and a loader is one package-manager line per platform. Produc
 | `require-fp64` | Also fail when the device does not support double precision (`'true'` or `'false'`). | `false` |
 | `cache` | Cache downloads and package archives (`'true'` or `'false'`). A no-op on runners with nothing worth caching. | `true` |
 
-`runtime`, `verify`, and `require-fp64` are validated by hand, since the runner enforces neither input types nor allowed values. An **empty string** (for example `verify: ''`, which is what an absent key in a build matrix expands to) is rejected rather than falling back to the default above — the action cannot distinguish "omitted" from "explicitly empty." Leave the input out of `with:` entirely to get the default, or interpolate a matrix value that is guaranteed to be `'true'`/`'false'` on every leg.
+`runtime`, `verify`, `require-fp64`, and `cache` are validated by hand, since the runner enforces neither input types nor allowed values. An **empty string** (for example `verify: ''`, which is what an absent key in a build matrix expands to) is rejected rather than falling back to the default above — the action cannot distinguish "omitted" from "explicitly empty." Leave the input out of `with:` entirely to get the default, or interpolate a matrix value that is guaranteed to be `'true'`/`'false'` on every leg.
 
 ## Outputs
 

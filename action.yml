@@ -70,6 +70,7 @@ runs:
         SE_VERSION: ${{ inputs.version }}
         SE_VERIFY: ${{ inputs.verify }}
         SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
+        SE_CACHE: ${{ inputs.cache }}
         SE_OS: ${{ runner.os }}
         SE_ARCH: ${{ runner.arch }}
       run: |
@@ -84,7 +85,7 @@ runs:
             ;;
         esac
 
-        for name in SE_VERIFY SE_REQUIRE_FP64; do
+        for name in SE_VERIFY SE_REQUIRE_FP64 SE_CACHE; do
           value="${!name}"
           if [ "${value}" != "true" ] && [ "${value}" != "false" ]; then
             echo "::error::Input ${name#SE_} must be \"true\" or \"false\", got '${value}'"
