@@ -3,12 +3,37 @@
 # Asserts the probe's output contract: four keys, always exit 0, and a device
 # count that is a non-negative integer. Run from the repository root.
 #
-# Usage: tests/probe-contract.sh [expected-min-devices]
-#   expected-min-devices defaults to 1. Pass 0 to assert only the contract.
+# Usage: tests/probe-contract.sh [expectation]
+#   expectation defaults to >=1. Two forms are accepted:
+#     N or >=N  -- at least N devices
+#     =N        -- exactly N devices
+#   Pass >=0 (or a bare 0) to assert only the contract; pass =0 to also assert
+#   that no device was found.
 
 set -uo pipefail
 
-expected_min="${1:-1}"
+expectation="${1:->=1}"
+case "${expectation}" in
+    '='*)
+        mode="exact"
+        expected="${expectation#=}"
+        ;;
+    '>='*)
+        mode="min"
+        expected="${expectation#>=}"
+        ;;
+    *)
+        mode="min"
+        expected="${expectation}"
+        ;;
+esac
+case "${expected}" in
+    ''|*[!0-9]*)
+        printf 'FAIL: malformed expectation "%s": expected N, >=N, or =N\n' "${expectation}" >&2
+        exit 1
+        ;;
+esac
+
 workdir="$(mktemp -d)"
 trap 'rm -rf "${workdir}"' EXIT
 
@@ -39,8 +64,14 @@ case "${fp64}" in
     *) fail "fp64 '${fp64}' is not 'true' or 'false'" ;;
 esac
 
-[ "${count}" -ge "${expected_min}" ] \
-    || fail "device-count ${count} is below expected minimum ${expected_min}
+if [ "${mode}" = "exact" ]; then
+    [ "${count}" -eq "${expected}" ] \
+        || fail "device-count ${count} does not equal expected ${expected}
 ${output}"
+else
+    [ "${count}" -ge "${expected}" ] \
+        || fail "device-count ${count} is below expected minimum ${expected}
+${output}"
+fi
 
 printf 'PASS: %s\n' "$(printf '%s\n' "${output}" | tr '\n' ' ')"

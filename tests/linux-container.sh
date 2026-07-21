@@ -18,8 +18,8 @@ image="${1:-ubuntu:24.04}"
 platform="${2:-}"
 runtime="${3:-pocl}"
 
-expected_min=1
-[ "${runtime}" = "none" ] && expected_min=0
+expectation=">=1"
+[ "${runtime}" = "none" ] && expectation="=0"
 
 engine="docker"
 command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || engine="podman"
@@ -41,5 +41,5 @@ platform_args=()
         export OCL_ICD_VENDORS="$(printf "%s\n" "${out}" | sed -n "s/^icd-vendors-path=//p")"
         cd /tmp && cp -r /work/tests .
         mkdir -p scripts && cp /work/scripts/probe.c scripts/
-        tests/probe-contract.sh '"${expected_min}"'
+        tests/probe-contract.sh '"${expectation}"'
     '
