@@ -210,6 +210,17 @@ runs:
         count="$(printf '%s\n' "${output}" | sed -n 's/^device-count=//p')"
         fp64="$(printf '%s\n' "${output}" | sed -n 's/^fp64=//p')"
 
+        # `[ "${count}" -eq 0 ]` returns 2 (not 1) on non-numeric input, which
+        # inside an `&&` chain in an `if` just makes the condition false --
+        # this gate is the action's entire safety story, so fail closed
+        # instead of silently passing on a malformed probe result.
+        case "${count}" in
+          ''|*[!0-9]*)
+            echo "::error::Probe produced a non-numeric device-count '${count}'"
+            exit 1
+            ;;
+        esac
+
         # Requesting a headers-only install and then failing for having no
         # device would be self-contradictory, so verification is never fatal
         # when runtime is "none".
