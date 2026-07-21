@@ -149,7 +149,6 @@ runs:
     - name: Export the OpenCL environment
       shell: bash
       env:
-        SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
         SE_CPPFLAGS: ${{ steps.install.outputs.opencl-cppflags }}
         SE_LIBS: ${{ steps.install.outputs.opencl-libs }}
         SE_ROOT: ${{ steps.install.outputs.opencl-root }}
@@ -167,21 +166,11 @@ runs:
           fi
         }
 
-        cppflags="${SE_CPPFLAGS}"
-
-        # Consumers write <CL/cl.h>, the Khronos loader layout that PoCL's
-        # headers and the Windows SDK both follow. Apple's framework instead
-        # places cl.h directly under Headers/, with no CL subdirectory, so
-        # give it one via a symlink rather than asking every consumer
-        # (including this action's own probe) to special-case the framework.
-        if [ "${SE_RESOLVED}" = "apple" ]; then
-          shim_dir="${RUNNER_TEMP}/setup-opencl-cl-shim"
-          mkdir -p "${shim_dir}"
-          ln -sfn "${SE_INCLUDE_DIR}" "${shim_dir}/CL"
-          cppflags="-I${shim_dir} ${cppflags}"
-        fi
-
-        set_env OPENCL_CPPFLAGS   "${cppflags}"
+        # Every install script is responsible for handing back cppflags that
+        # already resolve <CL/cl.h> on its own platform (see
+        # scripts/install-macos.sh for the Apple-framework special case), so
+        # this step stays runtime-agnostic.
+        set_env OPENCL_CPPFLAGS   "${SE_CPPFLAGS}"
         set_env OPENCL_LIBS       "${SE_LIBS}"
         set_env OpenCL_ROOT       "${SE_ROOT}"
         set_env OpenCL_LIBRARY    "${SE_LIBRARY}"

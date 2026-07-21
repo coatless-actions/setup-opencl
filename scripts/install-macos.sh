@@ -23,13 +23,27 @@ sdk_path="$(xcrun --show-sdk-path)"
 
 if [ "${runtime}" = "apple" ]; then
     framework="${sdk_path}/System/Library/Frameworks/OpenCL.framework"
+    headers="${framework}/Headers"
+
+    # Consumers write <CL/cl.h>, the Khronos loader layout that PoCL's
+    # headers and the Windows SDK both follow. Apple's framework instead
+    # places cl.h directly under Headers/, with no CL subdirectory, so give
+    # it one via a symlink rather than asking every consumer (including this
+    # action's own probe) to special-case the framework. Every channel that
+    # hands a consumer an include path -- opencl-include-dir, opencl-cppflags,
+    # and (via the action's export step) OpenCL_INCLUDE_DIR -- must agree, so
+    # the shim is built once, here, and all three point at it.
+    shim_dir="${RUNNER_TEMP}/setup-opencl-cl-shim"
+    mkdir -p "${shim_dir}"
+    ln -sfn "${headers}" "${shim_dir}/CL"
+
     emit opencl-root        "${framework}"
-    emit opencl-include-dir "${framework}/Headers"
+    emit opencl-include-dir "${shim_dir}"
     # Emit the framework directory, not the binary inside it. On modern macOS,
     # the binary lives only in the dyld shared cache; the framework directory is
     # what CMake's find_library(OpenCL_LIBRARY) returns on macOS.
     emit opencl-library     "/System/Library/Frameworks/OpenCL.framework"
-    emit opencl-cppflags    "-DCL_SILENCE_DEPRECATION"
+    emit opencl-cppflags    "-I${shim_dir} -DCL_SILENCE_DEPRECATION"
     emit opencl-libs        "-framework OpenCL"
     emit icd-vendors-path   ""
     emit runtime-name       "apple"
