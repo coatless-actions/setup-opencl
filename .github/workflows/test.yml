@@ -62,6 +62,8 @@ jobs:
           SE_FP64: ${{ steps.setup.outputs.fp64 }}
           SE_RUNTIME_NAME: ${{ steps.setup.outputs.runtime-name }}
         run: |
+          set -euo pipefail
+
           echo "runtime-name    = ${SE_RUNTIME_NAME}"
           echo "device-count    = ${SE_DEVICE_COUNT}"
           echo "device-name     = ${SE_DEVICE_NAME}"
@@ -99,6 +101,8 @@ jobs:
       - name: Build a consumer program using only the exported environment
         shell: bash
         run: |
+          set -euo pipefail
+
           cat > consumer.c <<'PROGRAM'
           #define CL_TARGET_OPENCL_VERSION 300
           #include <stdio.h>
