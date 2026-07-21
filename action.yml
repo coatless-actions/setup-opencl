@@ -111,6 +111,29 @@ runs:
           esac
         fi
 
+        # Runtime availability is OS-specific: Windows has no pocl or apple
+        # runtime, and intel's CPU runtime is Windows-only. Validate the
+        # resolved value (never the raw 'auto') so this catches both an
+        # explicit mismatched runtime and an auto-resolved one alike.
+        case "${SE_OS}" in
+          Windows)
+            case "${resolved}" in
+              pocl|apple)
+                echo "::error::Runtime '${resolved}' is not available on Windows"
+                echo "Windows supports only 'intel' or 'none'. Choose one of those, or leave 'runtime' as 'auto'."
+                exit 1
+                ;;
+            esac
+            ;;
+          Linux|macOS)
+            if [ "${resolved}" = "intel" ]; then
+              echo "::error::Runtime 'intel' is not available on ${SE_OS}"
+              echo "Intel's CPU runtime is installed only on Windows in this action. Choose 'pocl' (or 'apple' on macOS), or leave 'runtime' as 'auto'."
+              exit 1
+            fi
+            ;;
+        esac
+
         if [ -n "${SE_VERSION}" ] && [ "${resolved}" != "intel" ]; then
           echo "::warning::The 'version' input is only honored for runtime 'intel' on Windows; ignoring it for runtime '${resolved}'"
         fi
