@@ -39,7 +39,7 @@ outputs:
     description: 'Full path to the ICD loader library'
     value: ${{ steps.collect.outputs.opencl-library }}
   icd-vendors-path:
-    description: 'Directory or file the ICD loader was pointed at'
+    description: 'Loader- and platform-specific vendor path (a file on Linux, a directory on macOS, a vendor DLL path on Windows). Diagnostic; not a portable value. Consumers should use the OCL_ICD_VENDORS / OCL_ICD_FILENAMES environment variables this action already exports instead of wiring this output up themselves -- see the README'
     value: ${{ steps.collect.outputs.icd-vendors-path }}
   runtime-name:
     description: 'Runtime actually installed: pocl, intel-cpu, apple, or none'

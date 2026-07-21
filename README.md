@@ -42,7 +42,7 @@ Installing headers and a loader is one package-manager line per platform. Produc
 | `opencl-root` | Root directory of the installed OpenCL SDK. |
 | `opencl-include-dir` | Directory containing `CL/cl.h`. |
 | `opencl-library` | Full path to the ICD loader library. |
-| `icd-vendors-path` | Directory or file the ICD loader was pointed at. |
+| `icd-vendors-path` | Diagnostic; not a portable value. See the note below the table. |
 | `runtime-name` | Runtime actually installed: `pocl`, `intel-cpu`, `apple`, or `none`. |
 | `platform-version` | `CL_PLATFORM_VERSION` of the platform providing the first device. |
 | `device-name` | `CL_DEVICE_NAME` of the first device found. |
@@ -50,6 +50,8 @@ Installing headers and a loader is one package-manager line per platform. Produc
 | `fp64` | Whether the first device reports double-precision support. |
 
 The action also exports `OPENCL_CPPFLAGS`, `OPENCL_LIBS`, `OpenCL_ROOT`, `OpenCL_LIBRARY`, and `OpenCL_INCLUDE_DIR` to the job environment, plus `OCL_ICD_VENDORS` on Linux and macOS (when a vendor ICD was installed), `OCL_ICD_FILENAMES` on Windows, and `SDKROOT` on macOS. On Windows, the loader's `bin` directory (containing `clinfo.exe` and the loader DLL) is also prepended to `PATH`. A caller's own explicit setting of any of these always wins over the action's.
+
+`icd-vendors-path` means three different things depending on the platform: a **file** on Linux (the single `.icd` under `/etc/OpenCL/vendors`), a **directory** on macOS (PoCL's keg-relative vendors directory), and a **vendor DLL path** on Windows (the value passed to `OCL_ICD_FILENAMES` and written to the registry). Each is correct for its own loader, but none of them is a portable value: a workflow that does, say, `export OCL_ICD_VENDORS=${{ steps.opencl.outputs.icd-vendors-path }}` to work identically across platforms will get three different semantics, and on Windows that variable is the wrong one entirely. Do not wire this output up yourself — the action already exports the loader-correct environment variable for the current platform (`OCL_ICD_VENDORS` on Linux and macOS, `OCL_ICD_FILENAMES` on Windows), and that is what a cross-platform consumer should rely on. `icd-vendors-path` exists for diagnostics (what did the action actually point the loader at?) and for cache keys, not for consumers to depend on directly.
 
 ## Examples
 
