@@ -355,7 +355,20 @@ runs:
         # clinfo's exit code is unusable: main() tolerates
         # CL_PLATFORM_NOT_FOUND_KHR and unconditionally returns 0. Gate on
         # content, never on status.
-        $raw = & $clinfo --raw 2>&1 | Out-String
+        #
+        # stderr is merged in deliberately -- a vendor DLL that fails to load
+        # is exactly the kind of thing worth surfacing here -- but under
+        # $ErrorActionPreference = 'Stop', merging a native command's stderr
+        # via 2>&1 can itself raise a terminating NativeCommandError. Relax
+        # the preference only around this one call so stderr is captured as
+        # content, never treated as fatal.
+        $previousEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+          $raw = & $clinfo --raw 2>&1 | Out-String
+        } finally {
+          $ErrorActionPreference = $previousEap
+        }
 
         $names = [regex]::Matches($raw, 'CL_DEVICE_NAME\s+(.+)')
         $count = $names.Count
