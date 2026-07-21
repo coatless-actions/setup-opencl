@@ -143,8 +143,14 @@ runs:
 
         # The env context excludes variables inherited by the runner process,
         # so ${{ env.ImageVersion }} expands to the empty string and would
-        # silently produce a cache key that never invalidates. Export it here.
-        echo "IMAGE_OS_VERSION=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+        # silently produce a cache key that never invalidates. Compute it
+        # here and expose it as a step output -- like script-hash below --
+        # rather than writing it to GITHUB_ENV, which would push it into the
+        # caller's job environment as an undocumented side effect and, on a
+        # caller-set variable of the same name, clobber it outright, breaking
+        # the "a caller's explicit setting always wins" contract this action
+        # documents. Its only consumer is the cache key just below.
+        echo "image-os-version=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
 
         # The Windows cache key must invalidate whenever the pinned SDK/
         # runtime versions in install-windows.ps1 change, or a cache hit
@@ -175,7 +181,7 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}\opencl
-        key: opencl-${{ runner.os }}-${{ runner.arch }}-${{ env.IMAGE_OS_VERSION }}-${{ steps.resolve.outputs.resolved-runtime }}-${{ inputs.version }}-${{ steps.resolve.outputs.script-hash }}
+        key: opencl-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.image-os-version }}-${{ steps.resolve.outputs.resolved-runtime }}-${{ inputs.version }}-${{ steps.resolve.outputs.script-hash }}
 
     - name: Install OpenCL
       id: install
