@@ -32,6 +32,11 @@ jobs:
           # it means the runtime was installed when it should not have been.
           - { os: ubuntu-24.04,      runtime: none, expect: '=0' }
           - { os: macos-latest,      runtime: none, expect: '=0' }
+          # Throwaway: settling whether Apple's OpenCL.framework yields zero
+          # devices on hosted Apple Silicon runners, per the design doc.
+          # '>=0' asserts nothing and always passes -- this leg exists only
+          # to surface the real device-count in its logs.
+          - { os: macos-latest,      runtime: apple, expect: '>=0' }
 
     steps:
       - name: Checkout the action
