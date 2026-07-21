@@ -31,31 +31,31 @@ inputs:
 outputs:
   opencl-root:
     description: 'Root directory of the installed OpenCL SDK'
-    value: ${{ steps.install.outputs.opencl-root }}
+    value: ${{ steps.collect.outputs.opencl-root }}
   opencl-include-dir:
     description: 'Directory containing CL/cl.h'
-    value: ${{ steps.install.outputs.opencl-include-dir }}
+    value: ${{ steps.collect.outputs.opencl-include-dir }}
   opencl-library:
     description: 'Full path to the ICD loader library'
-    value: ${{ steps.install.outputs.opencl-library }}
+    value: ${{ steps.collect.outputs.opencl-library }}
   icd-vendors-path:
     description: 'Directory or file the ICD loader was pointed at'
-    value: ${{ steps.install.outputs.icd-vendors-path }}
+    value: ${{ steps.collect.outputs.icd-vendors-path }}
   runtime-name:
     description: 'Runtime actually installed: pocl, intel-cpu, apple, or none'
-    value: ${{ steps.install.outputs.runtime-name }}
+    value: ${{ steps.collect.outputs.runtime-name }}
   platform-version:
     description: 'CL_PLATFORM_VERSION of the platform providing the first device'
-    value: ${{ steps.verify.outputs.platform-version }}
+    value: ${{ steps.probe.outputs.platform-version }}
   device-name:
     description: 'CL_DEVICE_NAME of the first device found'
-    value: ${{ steps.verify.outputs.device-name }}
+    value: ${{ steps.probe.outputs.device-name }}
   device-count:
     description: 'Number of OpenCL devices found. Zero is a valid value, not an error signal'
-    value: ${{ steps.verify.outputs.device-count }}
+    value: ${{ steps.probe.outputs.device-count }}
   fp64:
     description: 'Whether the first device reports double-precision support ("true" or "false")'
-    value: ${{ steps.verify.outputs.fp64 }}
+    value: ${{ steps.probe.outputs.fp64 }}
 
 runs:
   using: 'composite'
@@ -122,8 +122,19 @@ runs:
         # silently produce a cache key that never invalidates. Export it here.
         echo "IMAGE_OS_VERSION=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_ENV"
 
+    # Only Windows has a download large enough to be worth caching: the
+    # oclcpuexp archive is roughly 110 MB. Linux apt archives and macOS
+    # bottles are fast enough that caching them is not yet justified.
+    - name: Restore the OpenCL runtime cache
+      if: runner.os == 'Windows' && inputs.cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}\opencl
+        key: opencl-${{ runner.os }}-${{ runner.arch }}-${{ env.IMAGE_OS_VERSION }}-${{ steps.resolve.outputs.resolved-runtime }}-${{ inputs.version }}
+
     - name: Install OpenCL
       id: install
+      if: runner.os != 'Windows'
       shell: bash
       env:
         SE_RUNTIME: ${{ steps.resolve.outputs.resolved-runtime }}
@@ -149,16 +160,78 @@ runs:
           '^[a-z][a-z0-9-]*=' \
           >> "$GITHUB_OUTPUT"
 
+    - name: Install OpenCL (Windows)
+      id: install-windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        SE_RUNTIME: ${{ steps.resolve.outputs.resolved-runtime }}
+        SE_VERSION: ${{ inputs.version }}
+      run: |
+        & "$env:GITHUB_ACTION_PATH\scripts\install-windows.ps1" |
+          Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
+
+    - name: Register the vendor ICD (Windows)
+      if: runner.os == 'Windows' && steps.install-windows.outputs.runtime-name != 'none'
+      shell: pwsh
+      run: |
+        & "$env:GITHUB_ACTION_PATH\scripts\register-icd.ps1" `
+            -IcdPath "${{ steps.install-windows.outputs.icd-filenames }}"
+
+    # Merges the per-OS install outputs into one canonical set. This is a shell
+    # step, not a ${{ a || b }} expression, because Actions' || is truthiness
+    # based: 'false' and '0' are falsy, so a legitimate zero or false would be
+    # discarded rather than passed through.
+    - name: Collect install results
+      id: collect
+      shell: bash
+      env:
+        SE_NIX_ROOT: ${{ steps.install.outputs.opencl-root }}
+        SE_WIN_ROOT: ${{ steps.install-windows.outputs.opencl-root }}
+        SE_NIX_INCLUDE: ${{ steps.install.outputs.opencl-include-dir }}
+        SE_WIN_INCLUDE: ${{ steps.install-windows.outputs.opencl-include-dir }}
+        SE_NIX_LIBRARY: ${{ steps.install.outputs.opencl-library }}
+        SE_WIN_LIBRARY: ${{ steps.install-windows.outputs.opencl-library }}
+        SE_NIX_CPPFLAGS: ${{ steps.install.outputs.opencl-cppflags }}
+        SE_WIN_CPPFLAGS: ${{ steps.install-windows.outputs.opencl-cppflags }}
+        SE_NIX_LIBS: ${{ steps.install.outputs.opencl-libs }}
+        SE_WIN_LIBS: ${{ steps.install-windows.outputs.opencl-libs }}
+        SE_NIX_ICD: ${{ steps.install.outputs.icd-vendors-path }}
+        SE_WIN_ICD: ${{ steps.install-windows.outputs.icd-vendors-path }}
+        SE_NIX_RUNTIME_NAME: ${{ steps.install.outputs.runtime-name }}
+        SE_WIN_RUNTIME_NAME: ${{ steps.install-windows.outputs.runtime-name }}
+      run: |
+        set -euo pipefail
+
+        # Exactly one of the two install steps ran, so the other's outputs are
+        # unset. Pick by which side actually produced a runtime-name.
+        if [ "${RUNNER_OS}" = "Windows" ]; then side="WIN"; else side="NIX"; fi
+
+        # Map each short internal key to the kebab-case name the outputs:
+        # block declares, so steps.collect.outputs.* uses the same names
+        # every other step already reads.
+        for pair in ROOT:opencl-root INCLUDE:opencl-include-dir \
+                    LIBRARY:opencl-library CPPFLAGS:opencl-cppflags \
+                    LIBS:opencl-libs ICD:icd-vendors-path \
+                    RUNTIME_NAME:runtime-name; do
+          key="${pair%%:*}"
+          outname="${pair#*:}"
+          var="SE_${side}_${key}"
+          printf '%s=%s\n' "${outname}" "${!var-}"
+        done >> "$GITHUB_OUTPUT"
+
     - name: Export the OpenCL environment
       shell: bash
       env:
-        SE_CPPFLAGS: ${{ steps.install.outputs.opencl-cppflags }}
-        SE_LIBS: ${{ steps.install.outputs.opencl-libs }}
-        SE_ROOT: ${{ steps.install.outputs.opencl-root }}
-        SE_LIBRARY: ${{ steps.install.outputs.opencl-library }}
-        SE_INCLUDE_DIR: ${{ steps.install.outputs.opencl-include-dir }}
-        SE_ICD_VENDORS: ${{ steps.install.outputs.icd-vendors-path }}
+        SE_CPPFLAGS: ${{ steps.collect.outputs.opencl-cppflags }}
+        SE_LIBS: ${{ steps.collect.outputs.opencl-libs }}
+        SE_ROOT: ${{ steps.collect.outputs.opencl-root }}
+        SE_LIBRARY: ${{ steps.collect.outputs.opencl-library }}
+        SE_INCLUDE_DIR: ${{ steps.collect.outputs.opencl-include-dir }}
+        SE_ICD_VENDORS: ${{ steps.collect.outputs.icd-vendors-path }}
         SE_SDKROOT: ${{ steps.install.outputs.sdkroot }}
+        SE_ICD_FILENAMES: ${{ steps.install-windows.outputs.icd-filenames }}
+        SE_LOADER_BIN_DIR: ${{ steps.install-windows.outputs.loader-bin-dir }}
       run: |
         set -euo pipefail
 
@@ -168,6 +241,20 @@ runs:
             printf '%s=%s\n' "$1" "$2" >> "$GITHUB_ENV"
           fi
         }
+
+        # OCL_ICD_FILENAMES is a Khronos-loader variable and is consulted
+        # before the registry. On Linux it does nothing -- ocl-icd added it
+        # only in 2.3.5, and no Ubuntu release through 26.04 ships that.
+        if [ "${RUNNER_OS}" = "Windows" ] && [ -n "${SE_ICD_FILENAMES:-}" ]; then
+          set_env OCL_ICD_FILENAMES "${SE_ICD_FILENAMES}"
+        fi
+
+        # Exactly one loader directory on PATH. GITHUB_PATH prepends, so
+        # adding a second would silently shadow the one the build linked
+        # against.
+        if [ -n "${SE_LOADER_BIN_DIR:-}" ]; then
+          printf '%s\n' "${SE_LOADER_BIN_DIR}" >> "$GITHUB_PATH"
+        fi
 
         # Every install script is responsible for handing back cppflags that
         # already resolve <CL/cl.h> on its own platform (see
@@ -179,7 +266,7 @@ runs:
         set_env OpenCL_LIBRARY    "${SE_LIBRARY}"
         set_env OpenCL_INCLUDE_DIR "${SE_INCLUDE_DIR}"
 
-        if [ -n "${SE_ICD_VENDORS}" ]; then
+        if [ "${RUNNER_OS}" != "Windows" ] && [ -n "${SE_ICD_VENDORS}" ]; then
           set_env OCL_ICD_VENDORS "${SE_ICD_VENDORS}"
         fi
 
@@ -188,8 +275,53 @@ runs:
           set_env SDKROOT "${SE_SDKROOT}"
         fi
 
+    - name: Probe for an OpenCL device (Windows)
+      id: verify-windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
+        SE_VERIFY: ${{ inputs.verify }}
+        SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $clinfo = Join-Path "${{ steps.install-windows.outputs.loader-bin-dir }}" 'clinfo.exe'
+
+        # clinfo's exit code is unusable: main() tolerates
+        # CL_PLATFORM_NOT_FOUND_KHR and unconditionally returns 0. Gate on
+        # content, never on status.
+        $raw = & $clinfo --raw 2>&1 | Out-String
+
+        $names = [regex]::Matches($raw, 'CL_DEVICE_NAME\s+(.+)')
+        $count = $names.Count
+        $name  = if ($count -gt 0) { $names[0].Groups[1].Value.Trim() } else { '' }
+        $ver   = [regex]::Match($raw, 'CL_PLATFORM_VERSION\s+(.+)')
+        $fp64m = [regex]::Match($raw, 'CL_DEVICE_DOUBLE_FP_CONFIG\s+(.+)')
+        $fp64  = if ($fp64m.Success -and $fp64m.Groups[1].Value.Trim() -notmatch '^(0|None)$') { 'true' } else { 'false' }
+
+        "device-count=$count"                                            | Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
+        "device-name=$name"                                              | Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
+        "platform-version=$(if ($ver.Success) { $ver.Groups[1].Value.Trim() })" | Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
+        "fp64=$fp64"                                                     | Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
+
+        if ($env:SE_RESOLVED -eq 'none') {
+          Write-Output "::notice::Installed headers and loader only; $count device(s) found"
+          exit 0
+        }
+        if ($env:SE_VERIFY -eq 'true' -and $count -eq 0) {
+          Write-Output "::error::No OpenCL device found on this runner"
+          Write-Output "Set 'runtime' to a specific value, or set 'verify' to 'false' if a device is not required."
+          exit 1
+        }
+        if ($env:SE_REQUIRE_FP64 -eq 'true' -and $fp64 -ne 'true') {
+          Write-Output "::error::The OpenCL device does not support double precision"
+          Write-Output "Set 'require-fp64' to 'false' if single precision is sufficient."
+          exit 1
+        }
+
     - name: Probe for an OpenCL device
       id: verify
+      if: runner.os != 'Windows'
       shell: bash
       env:
         SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
@@ -245,3 +377,30 @@ runs:
           echo "Set 'require-fp64' to 'false' if single precision is sufficient."
           exit 1
         fi
+
+    # Merges the two probe outputs the same way the install outputs are
+    # merged: a shell step, never `||`. device-count is legitimately 0 on
+    # every headers-only run and fp64 is legitimately false, and both are
+    # falsy to Actions' `||`, so a coalescing expression would blank out
+    # exactly the values the `runtime: none` legs exist to assert.
+    - name: Collect probe results
+      id: probe
+      shell: bash
+      env:
+        SE_NIX_COUNT: ${{ steps.verify.outputs.device-count }}
+        SE_WIN_COUNT: ${{ steps.verify-windows.outputs.device-count }}
+        SE_NIX_NAME: ${{ steps.verify.outputs.device-name }}
+        SE_WIN_NAME: ${{ steps.verify-windows.outputs.device-name }}
+        SE_NIX_PLATFORM: ${{ steps.verify.outputs.platform-version }}
+        SE_WIN_PLATFORM: ${{ steps.verify-windows.outputs.platform-version }}
+        SE_NIX_FP64: ${{ steps.verify.outputs.fp64 }}
+        SE_WIN_FP64: ${{ steps.verify-windows.outputs.fp64 }}
+      run: |
+        set -euo pipefail
+        if [ "${RUNNER_OS}" = "Windows" ]; then side="WIN"; else side="NIX"; fi
+        {
+          printf 'device-count=%s\n'     "$(eval "printf '%s' \"\${SE_${side}_COUNT-}\"")"
+          printf 'device-name=%s\n'      "$(eval "printf '%s' \"\${SE_${side}_NAME-}\"")"
+          printf 'platform-version=%s\n' "$(eval "printf '%s' \"\${SE_${side}_PLATFORM-}\"")"
+          printf 'fp64=%s\n'             "$(eval "printf '%s' \"\${SE_${side}_FP64-}\"")"
+        } >> "$GITHUB_OUTPUT"

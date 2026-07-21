@@ -45,9 +45,9 @@ jobs:
           # ubuntu-24.04's PoCL reports fp64=true, so this leg proves the
           # input reaches the action and does not fire a false positive.
           - { os: ubuntu-24.04,      runtime: auto, verify: 'true',  require-fp64: 'true',  expect: '>=1' }
-          - { os: windows-2025,      runtime: auto, expect: '>=1' }
-          - { os: windows-2022,      runtime: auto, expect: '>=1' }
-          - { os: windows-2025,      runtime: none, expect: '=0' }
+          - { os: windows-2025,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
+          - { os: windows-2022,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
+          - { os: windows-2025,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
 
     steps:
       - name: Checkout the action
