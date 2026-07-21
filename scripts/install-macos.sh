@@ -33,7 +33,9 @@ if [ "${runtime}" = "apple" ]; then
     # hands a consumer an include path -- opencl-include-dir, opencl-cppflags,
     # and (via the action's export step) OpenCL_INCLUDE_DIR -- must agree, so
     # the shim is built once, here, and all three point at it.
-    shim_dir="${RUNNER_TEMP}/setup-opencl-cl-shim"
+    # RUNNER_TEMP exists only on a GitHub Actions runner; fall back to system
+    # temp directories so this script can run locally.
+    shim_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/setup-opencl-cl-shim"
     mkdir -p "${shim_dir}"
     ln -sfn "${headers}" "${shim_dir}/CL"
 
