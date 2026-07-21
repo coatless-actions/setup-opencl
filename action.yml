@@ -430,7 +430,16 @@ runs:
 
         output="$("${probe_dir}/probe")"
         printf '%s\n' "${output}"
-        printf '%s\n' "${output}" >> "$GITHUB_OUTPUT"
+        # probe.c is fully controlled by this action, so its stdout is safe
+        # today, but this is the same key=value-only contract the other
+        # three GITHUB_OUTPUT write sites already enforce (see "Install
+        # OpenCL" above and the Windows install/probe steps) -- apply it
+        # here too rather than being the one site that assumes well-formed
+        # output forever. Full stdout still reaches the job log via the
+        # printf above.
+        printf '%s\n' "${output}" | grep -E \
+          '^[a-z][a-z0-9-]*=' \
+          >> "$GITHUB_OUTPUT"
 
         count="$(printf '%s\n' "${output}" | sed -n 's/^device-count=//p')"
         fp64="$(printf '%s\n' "${output}" | sed -n 's/^fp64=//p')"
