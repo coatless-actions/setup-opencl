@@ -41,9 +41,9 @@ jobs:
             --jq '.[] | select(.tag_name | test("^[0-9]{4}-WW[0-9]{2}$"))' \
             | jq -s 'sort_by(.tag_name) | last')"
           tag="$(printf '%s' "${release}" | jq -r '.tag_name')"
-          # Same rule as Resolve-RuntimeAssetName in install-windows.ps1:
-          # starts with "win-oclcpuexp" AND ends with ".zip", so the two
-          # cannot disagree on which asset is the runtime.
+          # Same rule as Resolve-RuntimeAsset in install-windows.ps1: starts
+          # with "win-oclcpuexp" AND ends with ".zip", so the two cannot
+          # disagree on which asset is the runtime.
           asset="$(printf '%s' "${release}" \
             | jq -r '[.assets[].name | select(startswith("win-oclcpuexp") and endswith(".zip"))] | first')"
 
@@ -53,14 +53,81 @@ jobs:
             exit 1
           fi
 
-          echo "tag=${tag}"     >> "$GITHUB_OUTPUT"
-          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+          # GitHub reports a SHA-256 'digest' field on every uploaded release
+          # asset -- the same field install-windows.ps1's Resolve-RuntimeAsset
+          # reads for a caller-overridden 'version'. Reusing it here keeps
+          # the pinned default's digest and the override path honest against
+          # the same source of truth. A bump PR that carries a stale digest
+          # would fail every Windows leg's verification, so treat a missing
+          # digest as fatal rather than opening a PR install-windows.ps1
+          # cannot possibly pass.
+          digest="$(printf '%s' "${release}" \
+            | jq -r --arg name "${asset}" '[.assets[] | select(.name == $name) | .digest] | first // empty' \
+            | sed 's/^sha256://')"
+          if [ -z "${digest}" ]; then
+            echo "::error::GitHub reported no SHA-256 digest for asset '${asset}' on release '${tag}'"
+            echo "The asset may still be processing on GitHub's side; re-run this workflow shortly."
+            exit 1
+          fi
 
-      - name: Update the pinned runtime
-        id: bump
+          {
+            echo "tag=${tag}"
+            echo "asset=${asset}"
+            echo "digest=${digest}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Same rationale as the Intel lookup above: OpenCL-SDK release tags
+      # (vYYYY.MM.DD) are the only enumerable source for "latest" here too.
+      - name: Look up the newest OpenCL-SDK release
+        id: latest-sdk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same paginated, server-side-filtered-then-locally-sorted query
+          # style as the Intel lookup above, for the same reason: page-one
+          # created-order is not a substitute for sorting the matching tags
+          # themselves. vYYYY.MM.DD is zero-padded, so lexical sort is
+          # chronological sort here too.
+          release="$(gh api --paginate repos/KhronosGroup/OpenCL-SDK/releases \
+            --jq '.[] | select(.tag_name | test("^v[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"))' \
+            | jq -s 'sort_by(.tag_name) | last')"
+          tag="$(printf '%s' "${release}" | jq -r '.tag_name')"
+          # Only the Win-x64 zip is what install-windows.ps1 downloads --
+          # excludes Win-x86 and the Source.* assets the same release ships.
+          asset="$(printf '%s' "${release}" \
+            | jq -r '[.assets[].name | select(startswith("OpenCL-SDK-") and endswith("-Win-x64.zip"))] | first')"
+
+          if [ -z "${tag}" ] || [ "${tag}" = "null" ] || [ -z "${asset}" ] || [ "${asset}" = "null" ]; then
+            echo "::error::Could not determine the newest OpenCL-SDK release"
+            echo "The KhronosGroup/OpenCL-SDK release naming may have changed."
+            exit 1
+          fi
+
+          # Same digest source and same "fatal, not a warning" reasoning as
+          # the Intel lookup above.
+          digest="$(printf '%s' "${release}" \
+            | jq -r --arg name "${asset}" '[.assets[] | select(.name == $name) | .digest] | first // empty' \
+            | sed 's/^sha256://')"
+          if [ -z "${digest}" ]; then
+            echo "::error::GitHub reported no SHA-256 digest for asset '${asset}' on release '${tag}'"
+            echo "The asset may still be processing on GitHub's side; re-run this workflow shortly."
+            exit 1
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "asset=${asset}"
+            echo "digest=${digest}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update the pinned Intel CPU runtime
+        id: bump-runtime
         env:
           SE_TAG: ${{ steps.latest.outputs.tag }}
           SE_ASSET: ${{ steps.latest.outputs.asset }}
+          SE_SHA256: ${{ steps.latest.outputs.digest }}
         shell: bash
         run: |
           set -euo pipefail
@@ -70,31 +137,94 @@ jobs:
             echo "Already on ${SE_TAG}"
             exit 0
           fi
-          # Alignment matches $SdkVersion/$SdkUrl above these two lines in
-          # install-windows.ps1: the '=' sits in the same column across all
-          # four pinned assignments.
-          sed -i "s|^\$RuntimeTag *= *'.*'|\$RuntimeTag  = '${SE_TAG}'|" scripts/install-windows.ps1
-          sed -i "s|^\$RuntimeFile *= *'.*'|\$RuntimeFile = '${SE_ASSET}'|" scripts/install-windows.ps1
+          # Alignment matches the pinned-defaults block in
+          # install-windows.ps1, where the '=' sits in the same column
+          # across all six pinned assignments.
+          sed -i "s|^\$RuntimeTag *= *'.*'|\$RuntimeTag    = '${SE_TAG}'|" scripts/install-windows.ps1
+          sed -i "s|^\$RuntimeFile *= *'.*'|\$RuntimeFile   = '${SE_ASSET}'|" scripts/install-windows.ps1
+          sed -i "s|^\$RuntimeSha256 *= *'.*'|\$RuntimeSha256 = '${SE_SHA256}'|" scripts/install-windows.ps1
           echo "changed=true"        >> "$GITHUB_OUTPUT"
           echo "previous=${current}" >> "$GITHUB_OUTPUT"
 
+      - name: Update the pinned Khronos SDK
+        id: bump-sdk
+        env:
+          SE_VERSION: ${{ steps.latest-sdk.outputs.tag }}
+          SE_SHA256: ${{ steps.latest-sdk.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(sed -n "s/^\$SdkVersion *= *'\(.*\)'/\1/p" scripts/install-windows.ps1)"
+          if [ "${current}" = "${SE_VERSION}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already on ${SE_VERSION}"
+            exit 0
+          fi
+          # $SdkUrl is a formula over $SdkVersion (see install-windows.ps1),
+          # not a literal URL, so bumping the version is enough to move the
+          # download target -- only the version and digest pins are rewritten
+          # here.
+          sed -i "s|^\$SdkVersion *= *'.*'|\$SdkVersion    = '${SE_VERSION}'|" scripts/install-windows.ps1
+          sed -i "s|^\$SdkSha256 *= *'.*'|\$SdkSha256     = '${SE_SHA256}'|" scripts/install-windows.ps1
+          echo "changed=true"        >> "$GITHUB_OUTPUT"
+          echo "previous=${current}" >> "$GITHUB_OUTPUT"
+
+      # Builds one title and one body covering whichever pin(s) actually
+      # moved, so a week where both the SDK and the runtime move still opens
+      # a single coherent pull request instead of two competing ones.
+      - name: Compose the pull request title and body
+        id: pr
+        if: steps.bump-sdk.outputs.changed == 'true' || steps.bump-runtime.outputs.changed == 'true'
+        env:
+          SDK_CHANGED:  ${{ steps.bump-sdk.outputs.changed }}
+          SDK_TAG:      ${{ steps.latest-sdk.outputs.tag }}
+          SDK_ASSET:    ${{ steps.latest-sdk.outputs.asset }}
+          SDK_PREVIOUS: ${{ steps.bump-sdk.outputs.previous }}
+          RT_CHANGED:   ${{ steps.bump-runtime.outputs.changed }}
+          RT_TAG:       ${{ steps.latest.outputs.tag }}
+          RT_ASSET:     ${{ steps.latest.outputs.asset }}
+          RT_PREVIOUS:  ${{ steps.bump-runtime.outputs.previous }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${SDK_CHANGED}" = "true" ] && [ "${RT_CHANGED}" = "true" ]; then
+            title="Move the Khronos SDK to ${SDK_TAG} and the Windows CPU runtime to ${RT_TAG}"
+          elif [ "${SDK_CHANGED}" = "true" ]; then
+            title="Move the Khronos OpenCL SDK to ${SDK_TAG}"
+          else
+            title="Move the Windows CPU runtime to ${RT_TAG}"
+          fi
+          echo "title=${title}" >> "$GITHUB_OUTPUT"
+
+          {
+            if [ "${SDK_CHANGED}" = "true" ]; then
+              echo "Khronos published \`${SDK_TAG}\`, replacing \`${SDK_PREVIOUS}\`."
+              echo
+              echo "Asset: \`${SDK_ASSET}\`. Its SHA-256 pin was refreshed to match."
+              echo
+            fi
+            if [ "${RT_CHANGED}" = "true" ]; then
+              echo "Intel published \`${RT_TAG}\`, replacing \`${RT_PREVIOUS}\`."
+              echo
+              echo "Asset: \`${RT_ASSET}\`. Its SHA-256 pin was refreshed to match."
+              echo
+            fi
+            echo "\`Test\` does **not** run automatically on this pull request: it is"
+            echo "opened using the default \`GITHUB_TOKEN\`, and pull requests opened"
+            echo "with \`GITHUB_TOKEN\` do not trigger \`pull_request\` or \`push\`"
+            echo "workflows. Before merging, either close and reopen this pull"
+            echo "request, or run \`Test\` manually via \`workflow_dispatch\`, and"
+            echo "confirm the Windows legs still find a device and pass checksum"
+            echo "verification."
+          } > pr-body.md
+
       - name: Open a pull request
-        if: steps.bump.outputs.changed == 'true'
+        if: steps.bump-sdk.outputs.changed == 'true' || steps.bump-runtime.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          commit-message: 'Move the Windows CPU runtime to ${{ steps.latest.outputs.tag }}'
-          title: 'Move the Windows CPU runtime to ${{ steps.latest.outputs.tag }}'
-          body: |
-            Intel published `${{ steps.latest.outputs.tag }}`, replacing
-            `${{ steps.bump.outputs.previous }}`.
-
-            Asset: `${{ steps.latest.outputs.asset }}`
-
-            `Test` does **not** run automatically on this pull request: it is
-            opened using the default `GITHUB_TOKEN`, and pull requests opened
-            with `GITHUB_TOKEN` do not trigger `pull_request` or `push`
-            workflows. Before merging, either close and reopen this pull
-            request, or run `Test` manually via `workflow_dispatch`, and
-            confirm the Windows legs still find a device.
+          commit-message: '${{ steps.pr.outputs.title }}'
+          title: '${{ steps.pr.outputs.title }}'
+          body-path: pr-body.md
           branch: update-windows-runtime
           delete-branch: true
