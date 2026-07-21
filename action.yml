@@ -188,13 +188,26 @@ runs:
         SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
         SE_VERIFY: ${{ inputs.verify }}
         SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
+        SE_INCLUDE_DIR: ${{ steps.install.outputs.opencl-include-dir }}
       run: |
         set -euo pipefail
+
+        probe_cppflags="${OPENCL_CPPFLAGS}"
+
+        # probe.c includes <CL/cl.h>, the Khronos loader layout that PoCL's
+        # headers and the Windows SDK both follow. Apple's framework instead
+        # places cl.h directly under Headers/, with no CL subdirectory, so
+        # give it one via a symlink rather than changing the shared probe.
+        if [ "${SE_RESOLVED}" = "apple" ]; then
+          shim_dir="$(mktemp -d)"
+          ln -s "${SE_INCLUDE_DIR}" "${shim_dir}/CL"
+          probe_cppflags="-I${shim_dir} ${probe_cppflags}"
+        fi
 
         probe_dir="$(mktemp -d)"
         # shellcheck disable=SC2086
         cc -o "${probe_dir}/probe" "${GITHUB_ACTION_PATH}/scripts/probe.c" \
-           ${OPENCL_CPPFLAGS} ${OPENCL_LIBS}
+           ${probe_cppflags} ${OPENCL_LIBS}
 
         output="$("${probe_dir}/probe")"
         printf '%s\n' "${output}"
