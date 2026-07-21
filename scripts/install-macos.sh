@@ -65,7 +65,21 @@ HOMEBREW_NO_AUTO_UPDATE=1 brew install --quiet ${formulae}
 headers_prefix="$(brew --prefix opencl-headers)"
 loader_prefix="$(brew --prefix opencl-icd-loader)"
 
-emit opencl-root        "${loader_prefix}"
+# opencl-headers and opencl-icd-loader are two separate kegs, so neither
+# keg's own prefix contains both include/CL/cl.h and lib/libOpenCL.dylib. A
+# bare OpenCL_ROOT pointed at either one leaves CMake's find_package(OpenCL)
+# (via CMP0074) unable to resolve the other half via that root, and it
+# silently falls back to Apple's zero-device framework instead of erroring.
+# Same shim pattern as the apple branch's CL/ symlink above: build a merged
+# root once and hand out that, not either keg's prefix. RUNNER_TEMP exists
+# only on a GitHub Actions runner; fall back to system temp directories so
+# this script can run locally.
+root_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/setup-opencl-root"
+mkdir -p "${root_dir}"
+ln -sfn "${headers_prefix}/include" "${root_dir}/include"
+ln -sfn "${loader_prefix}/lib" "${root_dir}/lib"
+
+emit opencl-root        "${root_dir}"
 emit opencl-include-dir "${headers_prefix}/include"
 emit opencl-library     "${loader_prefix}/lib/libOpenCL.dylib"
 emit opencl-cppflags    "-I${headers_prefix}/include"
