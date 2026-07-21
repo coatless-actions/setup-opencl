@@ -1,0 +1,85 @@
+name: Update runtime
+
+on:
+  schedule:
+    - cron: '20 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout the action
+        uses: actions/checkout@v6
+
+      # Intel's own download URLs embed opaque GUIDs with no derivable
+      # pattern, so "latest" is only discoverable through intel/llvm's
+      # release tags.
+      - name: Look up the newest Intel CPU runtime release
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$(gh api repos/intel/llvm/releases \
+            --jq '[.[] | select(.tag_name | test("^[0-9]{4}-WW[0-9]{2}$"))][0]')"
+          tag="$(printf '%s' "${release}" | jq -r '.tag_name')"
+          # Same rule as Resolve-RuntimeAssetName in install-windows.ps1:
+          # starts with "win-oclcpuexp" AND ends with ".zip", so the two
+          # cannot disagree on which asset is the runtime.
+          asset="$(printf '%s' "${release}" \
+            | jq -r '[.assets[].name | select(startswith("win-oclcpuexp") and endswith(".zip"))] | first')"
+
+          if [ -z "${tag}" ] || [ "${tag}" = "null" ] || [ -z "${asset}" ] || [ "${asset}" = "null" ]; then
+            echo "::error::Could not determine the newest oclcpuexp release"
+            echo "The intel/llvm release naming may have changed."
+            exit 1
+          fi
+
+          echo "tag=${tag}"     >> "$GITHUB_OUTPUT"
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+
+      - name: Update the pinned runtime
+        id: bump
+        env:
+          SE_TAG: ${{ steps.latest.outputs.tag }}
+          SE_ASSET: ${{ steps.latest.outputs.asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(sed -n "s/^\$RuntimeTag *= *'\(.*\)'/\1/p" scripts/install-windows.ps1)"
+          if [ "${current}" = "${SE_TAG}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already on ${SE_TAG}"
+            exit 0
+          fi
+          # Alignment matches $SdkVersion/$SdkUrl above these two lines in
+          # install-windows.ps1: the '=' sits in the same column across all
+          # four pinned assignments.
+          sed -i "s|^\$RuntimeTag *= *'.*'|\$RuntimeTag  = '${SE_TAG}'|" scripts/install-windows.ps1
+          sed -i "s|^\$RuntimeFile *= *'.*'|\$RuntimeFile = '${SE_ASSET}'|" scripts/install-windows.ps1
+          echo "changed=true"        >> "$GITHUB_OUTPUT"
+          echo "previous=${current}" >> "$GITHUB_OUTPUT"
+
+      - name: Open a pull request
+        if: steps.bump.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          commit-message: 'Move the Windows CPU runtime to ${{ steps.latest.outputs.tag }}'
+          title: 'Move the Windows CPU runtime to ${{ steps.latest.outputs.tag }}'
+          body: |
+            Intel published `${{ steps.latest.outputs.tag }}`, replacing
+            `${{ steps.bump.outputs.previous }}`.
+
+            Asset: `${{ steps.latest.outputs.asset }}`
+
+            The Windows legs of `Test` verify that a device is still found
+            before this can merge.
+          branch: update-windows-runtime
+          delete-branch: true
