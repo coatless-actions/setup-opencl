@@ -83,6 +83,7 @@ if ($Version) {
     $RuntimeFile = Resolve-RuntimeAssetName -Tag $RuntimeTag
 }
 $RuntimeUrl = "https://github.com/intel/llvm/releases/download/$RuntimeTag/$RuntimeFile"
+Write-Host "Resolved Intel CPU runtime release: tag=$RuntimeTag asset=$RuntimeFile"
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
