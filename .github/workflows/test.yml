@@ -32,11 +32,14 @@ jobs:
           # it means the runtime was installed when it should not have been.
           - { os: ubuntu-24.04,      runtime: none, expect: '=0' }
           - { os: macos-latest,      runtime: none, expect: '=0' }
-          # Throwaway: settling whether Apple's OpenCL.framework yields zero
-          # devices on hosted Apple Silicon runners, per the design doc.
-          # '>=0' asserts nothing and always passes -- this leg exists only
-          # to surface the real device-count in its logs.
-          - { os: macos-latest,      runtime: apple, expect: '>=0' }
+          # Confirmed in CI (not reproducible on bare-metal Apple Silicon,
+          # which reports one device): Apple's OpenCL.framework enumerates a
+          # platform but returns zero devices on hosted Apple Silicon
+          # runners. 'verify: false' reflects what a real caller of
+          # 'runtime: apple' must also set here, since the action's own
+          # default 'verify: true' would otherwise fail the job on the
+          # expected zero-device count.
+          - { os: macos-latest,      runtime: apple, verify: false, expect: '=0' }
 
     steps:
       - name: Checkout the action
@@ -47,6 +50,7 @@ jobs:
         uses: ./
         with:
           runtime: ${{ matrix.runtime }}
+          verify: ${{ matrix.verify || 'true' }}
 
       - name: Confirm the action reported a device
         shell: bash

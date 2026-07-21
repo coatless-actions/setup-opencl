@@ -149,6 +149,7 @@ runs:
     - name: Export the OpenCL environment
       shell: bash
       env:
+        SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
         SE_CPPFLAGS: ${{ steps.install.outputs.opencl-cppflags }}
         SE_LIBS: ${{ steps.install.outputs.opencl-libs }}
         SE_ROOT: ${{ steps.install.outputs.opencl-root }}
@@ -166,7 +167,21 @@ runs:
           fi
         }
 
-        set_env OPENCL_CPPFLAGS   "${SE_CPPFLAGS}"
+        cppflags="${SE_CPPFLAGS}"
+
+        # Consumers write <CL/cl.h>, the Khronos loader layout that PoCL's
+        # headers and the Windows SDK both follow. Apple's framework instead
+        # places cl.h directly under Headers/, with no CL subdirectory, so
+        # give it one via a symlink rather than asking every consumer
+        # (including this action's own probe) to special-case the framework.
+        if [ "${SE_RESOLVED}" = "apple" ]; then
+          shim_dir="${RUNNER_TEMP}/setup-opencl-cl-shim"
+          mkdir -p "${shim_dir}"
+          ln -sfn "${SE_INCLUDE_DIR}" "${shim_dir}/CL"
+          cppflags="-I${shim_dir} ${cppflags}"
+        fi
+
+        set_env OPENCL_CPPFLAGS   "${cppflags}"
         set_env OPENCL_LIBS       "${SE_LIBS}"
         set_env OpenCL_ROOT       "${SE_ROOT}"
         set_env OpenCL_LIBRARY    "${SE_LIBRARY}"
@@ -188,26 +203,13 @@ runs:
         SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
         SE_VERIFY: ${{ inputs.verify }}
         SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
-        SE_INCLUDE_DIR: ${{ steps.install.outputs.opencl-include-dir }}
       run: |
         set -euo pipefail
-
-        probe_cppflags="${OPENCL_CPPFLAGS}"
-
-        # probe.c includes <CL/cl.h>, the Khronos loader layout that PoCL's
-        # headers and the Windows SDK both follow. Apple's framework instead
-        # places cl.h directly under Headers/, with no CL subdirectory, so
-        # give it one via a symlink rather than changing the shared probe.
-        if [ "${SE_RESOLVED}" = "apple" ]; then
-          shim_dir="$(mktemp -d)"
-          ln -s "${SE_INCLUDE_DIR}" "${shim_dir}/CL"
-          probe_cppflags="-I${shim_dir} ${probe_cppflags}"
-        fi
 
         probe_dir="$(mktemp -d)"
         # shellcheck disable=SC2086
         cc -o "${probe_dir}/probe" "${GITHUB_ACTION_PATH}/scripts/probe.c" \
-           ${probe_cppflags} ${OPENCL_LIBS}
+           ${OPENCL_CPPFLAGS} ${OPENCL_LIBS}
 
         output="$("${probe_dir}/probe")"
         printf '%s\n' "${output}"
