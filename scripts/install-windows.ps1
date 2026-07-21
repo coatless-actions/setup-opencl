@@ -20,6 +20,19 @@
     call. An overriding 'version' does not carry a known build number, so
     that case resolves the actual asset name from the GitHub Releases API
     for the given tag before building the download URL.
+
+    Both archives are verified against a pinned SHA-256 digest with
+    Get-FileHash before extraction -- the SDK zip ends up on the link line
+    and PATH, and the runtime zip's DLL is registered machine-wide in HKLM,
+    so neither is trusted unverified. The pinned default's digest travels
+    with its version/tag pin below and is refreshed by update-runtime.yml.
+    An overriding 'version' has no pinned digest to check against, so its
+    digest is resolved from the same GitHub Releases API response used to
+    resolve the asset name -- GitHub computes and reports a SHA-256
+    'digest' field for every uploaded release asset. If that field is ever
+    absent, verification for that one download is skipped with an explicit
+    '::warning::' rather than failing a legitimate override or silently
+    trusting an unverified 110 MB binary.
 #>
 
 [CmdletBinding()]
@@ -31,11 +44,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Pinned defaults. update-runtime.yml opens a PR when a newer tag appears.
-$SdkVersion  = 'v2026.05.29'
-$SdkUrl      = "https://github.com/KhronosGroup/OpenCL-SDK/releases/download/$SdkVersion/OpenCL-SDK-$SdkVersion-Win-x64.zip"
-$RuntimeTag  = '2026-WW28'
-$RuntimeFile = 'win-oclcpuexp-2026.22.6.1.17_160000_rel.zip'
+# Pinned defaults. update-runtime.yml opens a PR when a newer tag appears,
+# and refreshes the paired SHA-256 alongside it. The '=' sits in the same
+# column across all six assignments -- update-runtime.yml's sed rewrites
+# match on that alignment, so keep it if this block is touched by hand.
+$SdkVersion    = 'v2026.05.29'
+$SdkUrl        = "https://github.com/KhronosGroup/OpenCL-SDK/releases/download/$SdkVersion/OpenCL-SDK-$SdkVersion-Win-x64.zip"
+$SdkSha256     = '9a85ecef3e9276121ee257122be348bedf29299127b49c0d8286c2d7cf56768d'
+$RuntimeTag    = '2026-WW28'
+$RuntimeFile   = 'win-oclcpuexp-2026.22.6.1.17_160000_rel.zip'
+$RuntimeSha256 = '0f7d88ec112c5526d61486ac9f45f111f2cabfd89907f7db7db6edaa9f101dda'
 
 if (-not $Runtime) { $Runtime = 'intel' }
 
@@ -43,12 +61,40 @@ function Emit([string] $Key, [string] $Value) {
     Write-Output "$Key=$Value"
 }
 
-# Resolves the win-oclcpuexp asset name for an overriding release tag. The
-# pinned default's build number can't be assumed for an arbitrary tag --
-# that was the bug: reordering alone still hardcoded $RuntimeFile, so any
-# tag other than the pinned one would 404. Query the release's own asset
-# list instead of guessing.
-function Resolve-RuntimeAssetName([string] $Tag) {
+# Fails the run with this action's ::error:: + remediation contract when a
+# downloaded archive does not match its expected digest. This is the last
+# line of defense before either archive is trusted: the SDK zip ends up on
+# the link line and PATH, and the runtime zip's DLL is registered
+# machine-wide in HKLM\SOFTWARE\Khronos\OpenCL\Vendors. A silent mismatch
+# would defeat the point of pinning a digest at all, so this fails closed,
+# never just warns.
+function Assert-FileHash([string] $Path, [string] $Expected, [string] $Label) {
+    $actual   = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $expected = $Expected.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        Write-Output "::error::SHA-256 mismatch for ${Label}: expected $expected, got $actual"
+        Write-Output "The downloaded file does not match its pinned digest. This can mean the download was corrupted or intercepted in transit, or that upstream replaced the asset in place without changing its version/tag. Do not trust this file. If upstream genuinely republished the asset, verify the new digest out of band before updating the pin in install-windows.ps1."
+        Remove-Item -Force $Path -ErrorAction SilentlyContinue
+        exit 1
+    }
+}
+
+# Resolves the win-oclcpuexp asset name -- and its SHA-256 digest -- for an
+# overriding release tag. The pinned default's build number and digest
+# can't be assumed for an arbitrary tag -- that was the original bug:
+# reordering alone still hardcoded $RuntimeFile, so any tag other than the
+# pinned one would 404. Query the release's own asset list instead of
+# guessing.
+#
+# GitHub computes and reports a SHA-256 'digest' field on every uploaded
+# release asset, so the same API call that resolves the asset name also
+# resolves the digest to verify it against -- no separate checksums file to
+# locate or trust. If that field is ever absent (assets uploaded before
+# GitHub started computing it, or one still processing), verification for
+# this one download is skipped with an explicit '::warning::' instead of
+# either failing a legitimate override or silently trusting an unverified
+# 110 MB binary that is about to be registered machine-wide.
+function Resolve-RuntimeAsset([string] $Tag) {
     $headers = @{ 'Accept' = 'application/vnd.github+json' }
     if ($env:GITHUB_TOKEN) {
         # Avoids anonymous rate limiting on busy runners; works without it too.
@@ -73,14 +119,23 @@ function Resolve-RuntimeAssetName([string] $Tag) {
         exit 1
     }
 
-    return $asset.name
+    $sha256 = $null
+    if ($asset.digest -and $asset.digest -match '^sha256:([0-9a-fA-F]{64})$') {
+        $sha256 = $Matches[1]
+    } else {
+        Write-Output "::warning::intel/llvm release '$Tag' asset '$($asset.name)' has no SHA-256 digest reported by the GitHub API; skipping checksum verification for this overridden version"
+    }
+
+    return [PSCustomObject]@{ Name = $asset.name; Sha256 = $sha256 }
 }
 
 if ($Version) {
     # Only reassign after a successful resolution -- never fall back to the
     # pinned default silently on a bad tag.
-    $RuntimeTag  = $Version
-    $RuntimeFile = Resolve-RuntimeAssetName -Tag $RuntimeTag
+    $RuntimeTag = $Version
+    $resolved   = Resolve-RuntimeAsset -Tag $RuntimeTag
+    $RuntimeFile   = $resolved.Name
+    $RuntimeSha256 = $resolved.Sha256
 }
 $RuntimeUrl = "https://github.com/intel/llvm/releases/download/$RuntimeTag/$RuntimeFile"
 Write-Host "Resolved Intel CPU runtime release: tag=$RuntimeTag asset=$RuntimeFile"
@@ -108,6 +163,7 @@ function Test-SdkComplete([string] $Dir) {
 if (-not (Test-SdkComplete $sdkDir)) {
     $sdkZip = Join-Path $InstallDir 'sdk.zip'
     Invoke-WebRequest -Uri $SdkUrl -OutFile $sdkZip
+    Assert-FileHash -Path $sdkZip -Expected $SdkSha256 -Label "OpenCL SDK archive ($SdkVersion)"
     Expand-Archive -Path $sdkZip -DestinationPath $InstallDir -Force
     $extracted = Get-ChildItem -Path $InstallDir -Directory |
                  Where-Object { $_.Name -like 'OpenCL-SDK-*' } |
@@ -171,6 +227,9 @@ $found = if (Test-Path $rtDir) {
 if (-not $found) {
     $rtZip = Join-Path $InstallDir 'oclcpuexp.zip'
     Invoke-WebRequest -Uri $RuntimeUrl -OutFile $rtZip
+    if ($RuntimeSha256) {
+        Assert-FileHash -Path $rtZip -Expected $RuntimeSha256 -Label "Intel CPU runtime archive ($RuntimeTag)"
+    }
     New-Item -ItemType Directory -Force -Path $rtDir | Out-Null
     Expand-Archive -Path $rtZip -DestinationPath $rtDir -Force
     Remove-Item -Force $rtZip
