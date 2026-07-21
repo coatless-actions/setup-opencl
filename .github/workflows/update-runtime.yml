@@ -27,8 +27,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          release="$(gh api repos/intel/llvm/releases \
-            --jq '[.[] | select(.tag_name | test("^[0-9]{4}-WW[0-9]{2}$"))][0]')"
+          # --paginate walks every page of releases rather than just the
+          # first 30 (gh api's default per_page). Sorting explicitly by
+          # tag_name -- instead of trusting the newest-created-first order
+          # the API happens to return and taking index [0] of page one --
+          # means the true newest match is still found even if it was
+          # created out of tag order or sits behind non-matching releases on
+          # a later page. Relying on page-one order alone previously let an
+          # older matching tag win, opening a downgrade PR that CI would
+          # pass because the older runtime still works. WW tags are
+          # zero-padded (YYYY-WWNN), so lexical sort is chronological sort.
+          release="$(gh api --paginate repos/intel/llvm/releases \
+            --jq '.[] | select(.tag_name | test("^[0-9]{4}-WW[0-9]{2}$"))' \
+            | jq -s 'sort_by(.tag_name) | last')"
           tag="$(printf '%s' "${release}" | jq -r '.tag_name')"
           # Same rule as Resolve-RuntimeAssetName in install-windows.ps1:
           # starts with "win-oclcpuexp" AND ends with ".zip", so the two
@@ -79,7 +90,11 @@ jobs:
 
             Asset: `${{ steps.latest.outputs.asset }}`
 
-            The Windows legs of `Test` verify that a device is still found
-            before this can merge.
+            `Test` does **not** run automatically on this pull request: it is
+            opened using the default `GITHUB_TOKEN`, and pull requests opened
+            with `GITHUB_TOKEN` do not trigger `pull_request` or `push`
+            workflows. Before merging, either close and reopen this pull
+            request, or run `Test` manually via `workflow_dispatch`, and
+            confirm the Windows legs still find a device.
           branch: update-windows-runtime
           delete-branch: true
