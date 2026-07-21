@@ -48,6 +48,13 @@ jobs:
           - { os: windows-2025,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           - { os: windows-2022,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           - { os: windows-2025,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
+          # cache has no coverage otherwise: every leg above either omits it
+          # (implicit default 'true') or would need it to be 'true' to
+          # verify a device. runtime: none keeps this cheap -- it downloads
+          # only the ~1 MB SDK, not the ~110 MB runtime archive -- while
+          # still exercising the 'cache: false' branch of the action's own
+          # `if: ... && inputs.cache == 'true'` gate on the restore step.
+          - { os: windows-2022,      runtime: none, verify: 'true',  require-fp64: 'false', cache: 'false', expect: '=0' }
 
     steps:
       - name: Checkout the action
@@ -60,6 +67,12 @@ jobs:
           runtime: ${{ matrix.runtime }}
           verify: ${{ matrix.verify }}
           require-fp64: ${{ matrix.require-fp64 }}
+          # Most legs don't set matrix.cache, which makes this an empty
+          # string -- '' || 'true' falls back to the action's own default.
+          # A leg that does set matrix.cache (a non-empty string, including
+          # the literal 'false') is truthy in Actions' `||` and passes
+          # through unchanged.
+          cache: ${{ matrix.cache || 'true' }}
 
       - name: Confirm the action reported a device
         shell: bash
@@ -148,6 +161,14 @@ jobs:
           - { os: ubuntu-latest,     runtime: auto, expect: '>=1' }
           - { os: macos-latest,      runtime: auto, expect: '>=1' }
           - { os: windows-latest,    runtime: auto, expect: '>=1' }
+          # version has no coverage otherwise: the demo legs that originally
+          # proved the asset-resolution path were removed once it was known
+          # to work, which left it untested again. Pinning a known-older
+          # intel/llvm tag here keeps that resolution path exercised without
+          # adding a Tier-1 Windows download -- version is honored only for
+          # runtime intel on Windows, and this is a second full ~110 MB
+          # runtime download alongside the two already in Tier-1.
+          - { os: windows-2025,      runtime: intel, version: '2026-WW22', expect: '>=1' }
 
     steps:
       - name: Checkout the action
@@ -158,6 +179,7 @@ jobs:
         uses: ./
         with:
           runtime: ${{ matrix.runtime }}
+          version: ${{ matrix.version }}
 
       # Mirrors the Tier-1 assertion exactly (see "Confirm the action
       # reported a device" above): both need set -euo pipefail and both
