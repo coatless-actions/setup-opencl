@@ -217,7 +217,7 @@ jobs:
             echo "request, or run \`Test\` manually via \`workflow_dispatch\`, and"
             echo "confirm the Windows legs still find a device and pass checksum"
             echo "verification."
-          } > pr-body.md
+          } > "${RUNNER_TEMP}/pr-body.md"
 
       - name: Open a pull request
         if: steps.bump-sdk.outputs.changed == 'true' || steps.bump-runtime.outputs.changed == 'true'
@@ -225,6 +225,6 @@ jobs:
         with:
           commit-message: '${{ steps.pr.outputs.title }}'
           title: '${{ steps.pr.outputs.title }}'
-          body-path: pr-body.md
+          body-path: ${{ runner.temp }}/pr-body.md
           branch: update-windows-runtime
           delete-branch: true
