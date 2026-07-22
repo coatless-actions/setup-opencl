@@ -21,18 +21,22 @@
     that case resolves the actual asset name from the GitHub Releases API
     for the given tag before building the download URL.
 
-    Both archives are verified against a pinned SHA-256 digest with
-    Get-FileHash before extraction -- the SDK zip ends up on the link line
-    and PATH, and the runtime zip's DLL is registered machine-wide in HKLM,
-    so neither is trusted unverified. The pinned default's digest travels
-    with its version/tag pin below and is refreshed by update-runtime.yml.
-    An overriding 'version' has no pinned digest to check against, so its
-    digest is resolved from the same GitHub Releases API response used to
-    resolve the asset name -- GitHub computes and reports a SHA-256
-    'digest' field for every uploaded release asset. If that field is ever
-    absent, verification for that one download is skipped with an explicit
-    '::warning::' rather than failing a legitimate override or silently
-    trusting an unverified 110 MB binary.
+    Both archives are verified with Get-FileHash before extraction -- the
+    SDK zip ends up on the link line and PATH, and the runtime zip's DLL is
+    registered machine-wide in HKLM, so neither is trusted unverified. What
+    the digest is checked against differs by path, though. The pinned
+    default's digest travels with its version/tag pin below and is
+    refreshed by update-runtime.yml -- a true pin, fixed ahead of time and
+    independent of the download itself. An overriding 'version' has no such
+    pin; its digest instead comes from the same GitHub Releases API
+    response used to resolve the asset name, moments before the archive is
+    fetched from that same origin. That is a transport check -- it catches
+    corruption or interception between API call and download -- not a pin
+    against a value fixed in advance. If the API reports no digest for the
+    resolved asset (which happens for assets uploaded before GitHub started
+    computing the field), there is nothing to verify the download against,
+    so the download is refused outright rather than trusting an unverified
+    110 MB binary that is about to be registered machine-wide.
 #>
 
 [CmdletBinding()]
@@ -89,11 +93,15 @@ function Assert-FileHash([string] $Path, [string] $Expected, [string] $Label) {
 # GitHub computes and reports a SHA-256 'digest' field on every uploaded
 # release asset, so the same API call that resolves the asset name also
 # resolves the digest to verify it against -- no separate checksums file to
-# locate or trust. If that field is ever absent (assets uploaded before
-# GitHub started computing it, or one still processing), verification for
-# this one download is skipped with an explicit '::warning::' instead of
-# either failing a legitimate override or silently trusting an unverified
-# 110 MB binary that is about to be registered machine-wide.
+# locate or trust. This is not a pin in the sense the pinned-defaults block
+# above is: the digest and the archive both come from the same GitHub-hosted
+# origin, resolved minutes apart, so it verifies transport integrity (the
+# download matches what the API just described) rather than authenticity
+# against a value fixed ahead of time. If the field is ever absent (assets
+# uploaded before GitHub started computing it, or one still processing),
+# there is nothing to verify the archive against before it is extracted and
+# registered machine-wide in HKLM, so resolution fails closed with this
+# project's ::error:: contract instead of proceeding unverified.
 function Resolve-RuntimeAsset([string] $Tag) {
     $headers = @{ 'Accept' = 'application/vnd.github+json' }
     if ($env:GITHUB_TOKEN) {
@@ -119,12 +127,12 @@ function Resolve-RuntimeAsset([string] $Tag) {
         exit 1
     }
 
-    $sha256 = $null
-    if ($asset.digest -and $asset.digest -match '^sha256:([0-9a-fA-F]{64})$') {
-        $sha256 = $Matches[1]
-    } else {
-        Write-Output "::warning::intel/llvm release '$Tag' asset '$($asset.name)' has no SHA-256 digest reported by the GitHub API; skipping checksum verification for this overridden version"
+    if (-not ($asset.digest -and $asset.digest -match '^sha256:([0-9a-fA-F]{64})$')) {
+        Write-Output "::error::intel/llvm release '$Tag' asset '$($asset.name)' has no SHA-256 digest reported by the GitHub API"
+        Write-Output "There is nothing to verify this download against, so it is refused rather than installed unverified. Use the pinned default (omit 'version'), or supply a tag whose asset has a published digest."
+        exit 1
     }
+    $sha256 = $Matches[1]
 
     return [PSCustomObject]@{ Name = $asset.name; Sha256 = $sha256 }
 }
@@ -227,9 +235,11 @@ $found = if (Test-Path $rtDir) {
 if (-not $found) {
     $rtZip = Join-Path $InstallDir 'oclcpuexp.zip'
     Invoke-WebRequest -Uri $RuntimeUrl -OutFile $rtZip
-    if ($RuntimeSha256) {
-        Assert-FileHash -Path $rtZip -Expected $RuntimeSha256 -Label "Intel CPU runtime archive ($RuntimeTag)"
-    }
+    # $RuntimeSha256 is always non-null here: the pinned default hardcodes
+    # it above, and Resolve-RuntimeAsset exits before returning if the
+    # GitHub API reported no digest for an overriding tag's asset. There is
+    # deliberately no fallback path that skips this check.
+    Assert-FileHash -Path $rtZip -Expected $RuntimeSha256 -Label "Intel CPU runtime archive ($RuntimeTag)"
     New-Item -ItemType Directory -Force -Path $rtDir | Out-Null
     Expand-Archive -Path $rtZip -DestinationPath $rtDir -Force
     Remove-Item -Force $rtZip
