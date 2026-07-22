@@ -92,7 +92,13 @@ Apple's `OpenCL.framework` enumerates a platform on hosted `macos-latest` runner
 
 ## Requirements
 
-This action assumes a C compiler is on `PATH`: it compiles a small probe program to check for a device, even when `runtime` is `none` and `verify` is `'false'`. On Linux, it also assumes a Debian-family package manager (`apt-get`). Both are preinstalled on every GitHub-hosted `ubuntu-*`, `macos-*`, and `windows-*` runner image, but neither is guaranteed inside a `container:` job, which is common for C++ and R projects and still runs on a GitHub-hosted runner. Use a Debian-family container image (e.g. `ubuntu:24.04`) with a C compiler installed — `build-essential` on Debian-family Linux, the Xcode Command Line Tools (`xcode-select --install`) on macOS — or install one yourself before this step. Missing either fails the job with an `::error::` and remediation, not a bare `command not found`.
+Requirements differ by platform:
+
+- **Linux** needs a C compiler (`cc`) and a Debian-family package manager (`apt-get`). The compiler builds a small probe program to check for a device — even when `runtime` is `none` and `verify` is `'false'` — and `apt-get` installs the headers, loader, and (unless `runtime` is `none`) PoCL.
+- **macOS** needs a C compiler (`cc`) for the same probe program, but no package manager: this action shells out to `brew` itself rather than assuming one is already configured. `apt-get` is a Linux-only package manager and plays no role here.
+- **Windows** needs neither. It verifies the device by running `clinfo.exe` from the installed SDK, not by compiling anything, and `install-windows.ps1` never invokes a C compiler or a package manager.
+
+A C compiler and `apt-get` are preinstalled on every GitHub-hosted `ubuntu-*` runner image; a C compiler (the Xcode Command Line Tools) is preinstalled on every `macos-*` image. Neither is guaranteed inside a `container:` job, which is common for C++ and R projects and still runs on a GitHub-hosted runner — but Actions' `container:` jobs run on Linux hosts only, so this caveat applies to Linux images, never macOS (`xcode-select --install` has no `container:`-job scenario to remediate). Use a Debian-family container image (e.g. `ubuntu:24.04`) with a C compiler installed — `build-essential` — or install one yourself before this step. Missing either fails the job with an `::error::` and remediation, not a bare `command not found`.
 
 ## Supported runners
 
