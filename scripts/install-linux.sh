@@ -34,6 +34,18 @@ if ! command -v apt-get >/dev/null 2>&1; then
     exit 1
 fi
 
+# Same reasoning as the apt-get check above: written to stderr so a failure
+# here still reaches the log via action.yml's output capture. A non-root
+# 'container:' job without sudo installed is a more common gap in
+# Debian-family images than a missing apt-get, and without this check it
+# fails bare -- "sudo: command not found" -- from the apt-get invocations
+# below instead of this script's usual ::error:: + remediation contract.
+if [ "$(id -u)" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
+    echo "::error::sudo not found" >&2
+    echo "This install script needs root privileges to run apt-get. Most 'container:' jobs already run as root (id 0), which needs no sudo at all; otherwise, use a base image that includes sudo, or install OpenCL headers, an ICD loader, and a CPU runtime yourself before this step." >&2
+    exit 1
+fi
+
 runtime="${SE_RUNTIME:-pocl}"
 
 emit() { printf '%s=%s\n' "$1" "$2"; }
