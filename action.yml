@@ -12,7 +12,7 @@ inputs:
     required: false
     default: 'auto'
   version:
-    description: 'Pin the runtime version. Only honored for runtime "intel" on Windows; ignored with a warning elsewhere (default: the tested version for this runner)'
+    description: 'Pin the runtime version. Only honored for runtime "intel" on Windows; ignored with a warning elsewhere (default: the tested version for this runner). Verified against the digest the GitHub API reports for that release, not a pinned one, and the job fails if none is published'
     required: false
     default: ''
   verify:

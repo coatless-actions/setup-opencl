@@ -3,11 +3,28 @@
 ## Why this matters here
 
 This action downloads third-party archives (an OpenCL SDK and, on Windows, a
-CPU runtime), verifies each against a pinned SHA-256 digest before use,
-registers a vendor ICD loader entry under `HKLM` on Windows, and modifies
-`PATH` and other job-environment variables. A flaw in the digest pins, the
-download URLs, the registry write, or the environment-export logic could let
-a workflow run untrusted code or link against a tampered binary.
+CPU runtime), registers a vendor ICD loader entry under `HKLM` on Windows,
+and modifies `PATH` and other job-environment variables. A flaw in the
+digest pins, the download URLs, the registry write, or the
+environment-export logic could let a workflow run untrusted code or link
+against a tampered binary.
+
+Verification is not uniform across every path, and it is worth being
+precise about that:
+
+- **Pinned default** (no `version:` input): each archive is verified
+  against a SHA-256 digest fixed in this action's source and refreshed by
+  its own update automation. This is the strongest guarantee -- a true pin,
+  independent of the download itself.
+- **Cache hit**: nothing is downloaded and nothing is re-hashed. Integrity
+  instead comes from the cache key's binding to the installer script's
+  hash and the resolved version, not from a digest check.
+- **`version:` override**: the digest is resolved from the same GitHub
+  Releases API response used to resolve the download itself, moments
+  before the bytes are fetched from that same origin -- a transport check,
+  not a pin against a value fixed in advance. If the API reports no digest
+  for the resolved asset, the download is refused outright rather than
+  proceeding unverified.
 
 ## Supported versions
 

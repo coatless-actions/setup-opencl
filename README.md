@@ -28,7 +28,7 @@ Installing headers and a loader is one package-manager line per platform. Produc
 | Input | Description | Default |
 |---|---|---|
 | `runtime` | OpenCL runtime to install: `pocl`, `intel`, `apple`, `none`, or `auto`. `auto` resolves to `pocl` on Linux and macOS and `intel` on Windows. | `auto` |
-| `version` | Pin the runtime version. Only honored for `runtime: intel` on Windows, where it takes an `intel/llvm` release tag (e.g. `2026-WW22`). Ignored, with a warning, for every other runtime. | `''` |
+| `version` | Pin the runtime version. Only honored for `runtime: intel` on Windows, where it takes an `intel/llvm` release tag (e.g. `2026-WW22`). Ignored, with a warning, for every other runtime. Verified against the digest the GitHub API reports for that release at resolution time, not a pinned one, and the job fails if the API reports none. | `''` |
 | `verify` | Fail the job when no OpenCL device is found (`'true'` or `'false'`). Never fatal when `runtime` is `none`. | `true` |
 | `require-fp64` | Also fail when the device does not support double precision (`'true'` or `'false'`). | `false` |
 | `cache` | Cache downloads and package archives (`'true'` or `'false'`). A no-op on runners with nothing worth caching. | `true` |
