@@ -184,6 +184,18 @@ if (-not (Test-SdkComplete $sdkDir)) {
     if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
     Move-Item -Path $extracted.FullName -Destination $sdkDir
     Remove-Item -Force $sdkZip
+
+    # Re-run the same completeness gate used for the cache-hit decision
+    # above. Without this, a layout drift that drops one of the four
+    # required files (most notably bin\OpenCL.dll, added to the gate
+    # alongside this check) would not fail loudly -- it would make every
+    # future run look like a cache miss forever, silently re-downloading
+    # and re-extracting the archive on every single run with no error.
+    if (-not (Test-SdkComplete $sdkDir)) {
+        Write-Output "::error::Extracted OpenCL SDK tree at '$sdkDir' is missing one of: include\CL\cl.h, lib\OpenCL.lib, bin\clinfo.exe, bin\OpenCL.dll"
+        Write-Output "The archive layout may have changed for SDK release $SdkVersion. Check https://github.com/KhronosGroup/OpenCL-SDK/releases/tag/$SdkVersion."
+        exit 1
+    }
 }
 
 $includeDir = Join-Path $sdkDir 'include'
