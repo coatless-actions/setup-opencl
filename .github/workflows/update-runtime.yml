@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout the action
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Intel's own download URLs embed opaque GUIDs with no derivable
       # pattern, so "latest" is only discoverable through intel/llvm's

@@ -74,7 +74,7 @@ jobs:
 
     steps:
       - name: Checkout the action
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up OpenCL
         id: setup
@@ -188,7 +188,7 @@ jobs:
 
     steps:
       - name: Checkout the action
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up OpenCL
         id: setup
@@ -274,7 +274,7 @@ jobs:
 
     steps:
       - name: Checkout the action
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Attempt setup with an invalid combination
         id: attempt
@@ -367,7 +367,7 @@ jobs:
 
     steps:
       - name: Checkout the action
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up OpenCL
         uses: ./
