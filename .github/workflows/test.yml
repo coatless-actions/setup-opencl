@@ -296,43 +296,39 @@ jobs:
 
   # The README promises a caller's own explicit setting of any exported
   # variable always wins over the action's export. This is the only leg
-  # that exercises that guarantee: it sets OPENCL_LIBS at job level -- the
-  # process environment set_env's `${!1+set}` check reads -- before the
-  # action runs, then asserts the sentinel survived. runtime: none and
-  # verify: false keep this fast and independent of any real toolchain,
-  # since the point under test is the environment-export contract, not a
-  # working device.
+  # that exercises that guarantee. It sets OpenCL_ROOT at job level -- a
+  # variable the action exports but never itself consumes -- rather than
+  # OPENCL_LIBS: the action's own probe step compiles and links against
+  # OPENCL_LIBS, so a sentinel there can't tell "set_env correctly skipped
+  # the export" apart from "the action never reached set_env at all", and
+  # would need continue-on-error to survive its own probe failing on a
+  # non-functional sentinel. OpenCL_ROOT has none of that: the action runs
+  # to completion normally, so the assertion below genuinely depends on
+  # set_env having deferred to the caller's value, not on how far the
+  # action got before dying. runtime: none and verify: false just keep the
+  # run fast and independent of any real toolchain.
   env-idempotency:
-    name: a caller's OPENCL_LIBS wins over the action's export
+    name: a caller's OpenCL_ROOT wins over the action's export
     runs-on: ubuntu-24.04
     env:
-      OPENCL_LIBS: sentinel-value
+      OpenCL_ROOT: sentinel-value
 
     steps:
       - name: Checkout the action
         uses: actions/checkout@v6
 
-      # Expected to fail past the "Export the OpenCL environment" step: the
-      # action's own device probe unconditionally compiles against whatever
-      # OPENCL_LIBS currently holds (see probe step comments in action.yml),
-      # and a non-functional sentinel is not a valid linker flag. That
-      # failure happens strictly after set_env has already decided (and, by
-      # the previous commit, logged) that OPENCL_LIBS stays untouched, so it
-      # does not undermine the assertion below -- continue-on-error just
-      # keeps the job alive to check it.
       - name: Set up OpenCL
-        continue-on-error: true
         uses: ./
         with:
           runtime: none
           verify: 'false'
 
-      - name: Confirm the caller's OPENCL_LIBS was not overwritten
+      - name: Confirm the caller's OpenCL_ROOT was not overwritten
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${OPENCL_LIBS}" != "sentinel-value" ]; then
-            echo "::error::Expected OPENCL_LIBS to remain 'sentinel-value' (the caller's own job-level setting), got '${OPENCL_LIBS}'"
+          if [ "${OpenCL_ROOT}" != "sentinel-value" ]; then
+            echo "::error::Expected OpenCL_ROOT to remain 'sentinel-value' (the caller's own job-level setting), got '${OpenCL_ROOT}'"
             exit 1
           fi
-          echo "OPENCL_LIBS correctly preserved the caller's own value: ${OPENCL_LIBS}"
+          echo "OpenCL_ROOT correctly preserved the caller's own value: ${OpenCL_ROOT}"
