@@ -449,16 +449,6 @@ runs:
 
         output="$("${probe_dir}/probe")"
         printf '%s\n' "${output}"
-        # probe.c is fully controlled by this action, so its stdout is safe
-        # today, but this is the same key=value-only contract the other
-        # three GITHUB_OUTPUT write sites already enforce (see "Install
-        # OpenCL" above and the Windows install/probe steps) -- apply it
-        # here too rather than being the one site that assumes well-formed
-        # output forever. Full stdout still reaches the job log via the
-        # printf above.
-        printf '%s\n' "${output}" | grep -E \
-          '^[a-z][a-z0-9-]*=' \
-          >> "$GITHUB_OUTPUT"
 
         count="$(printf '%s\n' "${output}" | sed -n 's/^device-count=//p')"
         fp64="$(printf '%s\n' "${output}" | sed -n 's/^fp64=//p')"
@@ -466,13 +456,31 @@ runs:
         # `[ "${count}" -eq 0 ]` returns 2 (not 1) on non-numeric input, which
         # inside an `&&` chain in an `if` just makes the condition false --
         # this gate is the action's entire safety story, so fail closed
-        # instead of silently passing on a malformed probe result.
+        # instead of silently passing on a malformed probe result. This runs
+        # before the GITHUB_OUTPUT filter below on purpose: under
+        # `set -euo pipefail`, a `grep` that matches nothing exits 1 and
+        # would otherwise kill the step with no message at all, burying this
+        # diagnostic instead of firing it.
         case "${count}" in
           ''|*[!0-9]*)
             echo "::error::Probe produced a non-numeric device-count '${count}'"
             exit 1
             ;;
         esac
+
+        # probe.c is fully controlled by this action, so its stdout is safe
+        # today, but this is the same key=value-only contract the other
+        # three GITHUB_OUTPUT write sites already enforce (see "Install
+        # OpenCL" above and the Windows install/probe steps) -- apply it
+        # here too rather than being the one site that assumes well-formed
+        # output forever. Full stdout still reaches the job log via the
+        # printf above. Safe from the pipefail-kills-the-step trap now that
+        # it runs after the count check above: a well-formed count implies a
+        # 'device-count=...' line was present, so grep is guaranteed at
+        # least one match.
+        printf '%s\n' "${output}" | grep -E \
+          '^[a-z][a-z0-9-]*=' \
+          >> "$GITHUB_OUTPUT"
 
         # Requesting a headers-only install and then failing for having no
         # device would be self-contradictory, so verification is never fatal
