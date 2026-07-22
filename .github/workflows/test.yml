@@ -12,11 +12,14 @@ on:
 permissions:
   contents: read
 
-# Rapid pushes to a pull request or feature branch should not queue up
-# multiple 10+-leg matrices behind each other -- only the newest push's run
-# is worth waiting for. The default branch is excluded from cancellation:
-# a push there can land between a scheduled run and a workflow_dispatch run,
-# and neither of those should be cut short by the other.
+# Rapid pushes to an open pull request should not queue up multiple
+# 10+-leg matrices behind each other -- only the newest push's run is worth
+# waiting for. A plain feature branch can't hit this at all: the push
+# trigger above only listens on main/master, so a pull request's own ref
+# (refs/pull/<n>/merge) is the only non-default ref this workflow ever runs
+# against. The default branch is excluded from cancellation: a push there
+# can land between a scheduled run and a workflow_dispatch run, and neither
+# of those should be cut short by the other.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
