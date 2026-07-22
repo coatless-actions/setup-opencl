@@ -294,6 +294,55 @@ jobs:
           fi
           echo "Correctly rejected: ${SE_REASON} (runtime=${SE_RUNTIME} on ${{ matrix.os }})"
 
+  # Every other 'reject' leg shares its OS+toolchain with some Tier-1 leg
+  # that proves the same combination genuinely works, so infrastructure
+  # trouble unrelated to this action (an image change, a checkout hiccup,
+  # bash unavailable) would surface as a Tier-1 failure instead of hiding
+  # inside a 'reject' pass. windows-11-arm has no such twin -- it is not
+  # supported at all, by design -- so "the leg went red" alone cannot tell
+  # the action's own ARM64 rejection apart from any of those unrelated
+  # failures; steps.attempt.outcome only ever says *that* the leg failed,
+  # never *why*. This job runs after 'reject' completes (so the leg's own
+  # log is finished and stable, not read mid-write) and greps that leg's
+  # job log for the action's specific, hard-coded ARM64 diagnostic, turning
+  # "it failed" into "it failed for the documented reason".
+  confirm-arm64-rejection-reason:
+    name: confirm windows-11-arm failed for the right reason
+    needs: reject
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Fetch the windows-11-arm reject leg's own log and grep it
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SE_REPO: ${{ github.repository }}
+          SE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          job_name="reject windows-arm64 on windows-11-arm"
+          job_id="$(gh api "repos/${SE_REPO}/actions/runs/${SE_RUN_ID}/jobs?per_page=100" \
+            --paginate --jq ".jobs[] | select(.name == \"${job_name}\") | .id")"
+
+          if [ -z "${job_id}" ]; then
+            echo "::error::Could not find the '${job_name}' job in this run via the Jobs API, so its failure reason cannot be confirmed"
+            exit 1
+          fi
+
+          log="$(gh api "repos/${SE_REPO}/actions/jobs/${job_id}/logs")"
+
+          if ! printf '%s' "${log}" | grep -qF 'No OpenCL CPU runtime exists for Windows on ARM64'; then
+            echo "::error::The windows-11-arm reject leg failed, but its log does not contain the action's expected ARM64 diagnostic -- it may have failed for an unrelated infrastructure reason, which this leg has no other coverage to catch"
+            exit 1
+          fi
+
+          echo "Confirmed: windows-11-arm failed with the action's own ARM64 diagnostic, not an unrelated infrastructure problem."
+
   # The README promises a caller's own explicit setting of any exported
   # variable always wins over the action's export. This is the only leg
   # that exercises that guarantee. It sets OpenCL_ROOT at job level -- a
