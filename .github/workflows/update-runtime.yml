@@ -105,6 +105,24 @@ jobs:
             exit 1
           fi
 
+          # startswith()/endswith() alone only prove the resolved asset fits
+          # the pattern, not that it is the only asset that does. If a
+          # release ever ships a second matching asset (a Debug build,
+          # say), 'first' would silently pick one file while the digest
+          # lookup below (keyed on the same name) still matches correctly --
+          # but nothing would catch a release shipping an asset named
+          # differently from the expected 'OpenCL-SDK-<tag>-Win-x64.zip',
+          # which install-windows.ps1's own $SdkUrl formula assumes. Assert
+          # the exact name so a naming surprise fails this workflow instead
+          # of silently producing a URL/digest pair that will fail every
+          # Windows leg.
+          expected_asset="OpenCL-SDK-${tag}-Win-x64.zip"
+          if [ "${asset}" != "${expected_asset}" ]; then
+            echo "::error::Resolved OpenCL-SDK asset '${asset}' for release '${tag}' does not match the expected name '${expected_asset}'"
+            echo "Check the assets listed at https://github.com/KhronosGroup/OpenCL-SDK/releases/tag/${tag} -- a second asset (e.g. a Debug build) may now also match 'OpenCL-SDK-*-Win-x64.zip'."
+            exit 1
+          fi
+
           # Same digest source and same "fatal, not a warning" reasoning as
           # the Intel lookup above.
           digest="$(printf '%s' "${release}" \
@@ -140,9 +158,40 @@ jobs:
           # Alignment matches the pinned-defaults block in
           # install-windows.ps1, where the '=' sits in the same column
           # across all six pinned assignments.
+          #
+          # sed is silent on a pattern that stops matching -- the alignment
+          # comment in install-windows.ps1 explicitly anticipates hand
+          # edits to that block, so a rewrite quietly not taking effect is a
+          # real possibility, not a hypothetical. Re-read each value back
+          # out of the file immediately and assert it equals what was just
+          # written; a PR whose tag/asset lines moved but whose digest did
+          # not (or vice versa) would fail every Windows leg's checksum
+          # verification while its own body claims the pin "was refreshed
+          # to match".
           sed -i "s|^\$RuntimeTag *= *'.*'|\$RuntimeTag    = '${SE_TAG}'|" scripts/install-windows.ps1
+          new_tag="$(sed -n "s/^\$RuntimeTag *= *'\(.*\)'/\1/p" scripts/install-windows.ps1)"
+          if [ "${new_tag}" != "${SE_TAG}" ]; then
+            echo "::error::scripts/install-windows.ps1: \$RuntimeTag rewrite did not take effect (expected '${SE_TAG}', found '${new_tag}')"
+            echo "A sed pattern in this step no longer matches the pinned-defaults block -- check for hand edits that broke its alignment, then fix the pattern here before this workflow opens a pull request whose pins do not match its own body."
+            exit 1
+          fi
+
           sed -i "s|^\$RuntimeFile *= *'.*'|\$RuntimeFile   = '${SE_ASSET}'|" scripts/install-windows.ps1
+          new_file="$(sed -n "s/^\$RuntimeFile *= *'\(.*\)'/\1/p" scripts/install-windows.ps1)"
+          if [ "${new_file}" != "${SE_ASSET}" ]; then
+            echo "::error::scripts/install-windows.ps1: \$RuntimeFile rewrite did not take effect (expected '${SE_ASSET}', found '${new_file}')"
+            echo "A sed pattern in this step no longer matches the pinned-defaults block -- check for hand edits that broke its alignment, then fix the pattern here before this workflow opens a pull request whose pins do not match its own body."
+            exit 1
+          fi
+
           sed -i "s|^\$RuntimeSha256 *= *'.*'|\$RuntimeSha256 = '${SE_SHA256}'|" scripts/install-windows.ps1
+          new_sha="$(sed -n "s/^\$RuntimeSha256 *= *'\(.*\)'/\1/p" scripts/install-windows.ps1)"
+          if [ "${new_sha}" != "${SE_SHA256}" ]; then
+            echo "::error::scripts/install-windows.ps1: \$RuntimeSha256 rewrite did not take effect (expected '${SE_SHA256}', found '${new_sha}')"
+            echo "A sed pattern in this step no longer matches the pinned-defaults block -- check for hand edits that broke its alignment, then fix the pattern here before this workflow opens a pull request whose pins do not match its own body."
+            exit 1
+          fi
+
           echo "changed=true"        >> "$GITHUB_OUTPUT"
           echo "previous=${current}" >> "$GITHUB_OUTPUT"
 
@@ -164,8 +213,26 @@ jobs:
           # not a literal URL, so bumping the version is enough to move the
           # download target -- only the version and digest pins are rewritten
           # here.
+          #
+          # Same re-read-and-assert rationale as the runtime bump step
+          # above: sed does not error on a pattern that stops matching, so
+          # verify each rewrite actually landed instead of trusting it did.
           sed -i "s|^\$SdkVersion *= *'.*'|\$SdkVersion    = '${SE_VERSION}'|" scripts/install-windows.ps1
+          new_version="$(sed -n "s/^\$SdkVersion *= *'\(.*\)'/\1/p" scripts/install-windows.ps1)"
+          if [ "${new_version}" != "${SE_VERSION}" ]; then
+            echo "::error::scripts/install-windows.ps1: \$SdkVersion rewrite did not take effect (expected '${SE_VERSION}', found '${new_version}')"
+            echo "A sed pattern in this step no longer matches the pinned-defaults block -- check for hand edits that broke its alignment, then fix the pattern here before this workflow opens a pull request whose pins do not match its own body."
+            exit 1
+          fi
+
           sed -i "s|^\$SdkSha256 *= *'.*'|\$SdkSha256     = '${SE_SHA256}'|" scripts/install-windows.ps1
+          new_sha="$(sed -n "s/^\$SdkSha256 *= *'\(.*\)'/\1/p" scripts/install-windows.ps1)"
+          if [ "${new_sha}" != "${SE_SHA256}" ]; then
+            echo "::error::scripts/install-windows.ps1: \$SdkSha256 rewrite did not take effect (expected '${SE_SHA256}', found '${new_sha}')"
+            echo "A sed pattern in this step no longer matches the pinned-defaults block -- check for hand edits that broke its alignment, then fix the pattern here before this workflow opens a pull request whose pins do not match its own body."
+            exit 1
+          fi
+
           echo "changed=true"        >> "$GITHUB_OUTPUT"
           echo "previous=${current}" >> "$GITHUB_OUTPUT"
 
