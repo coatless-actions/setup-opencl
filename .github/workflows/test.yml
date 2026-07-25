@@ -62,6 +62,16 @@ jobs:
           # reports fp64=true (Intel's CPU runtime), so this proves the
           # input reaches the action on Windows too.
           - { os: windows-2025,      runtime: auto, verify: 'true',  require-fp64: 'true',  expect: '>=1' }
+          # require-kernel, same reasoning as require-fp64 above: without a
+          # leg that sets it, the input is never executed. ubuntu-24.04's
+          # PoCL both enumerates a device and runs kernels on it, so this
+          # proves the gate reaches the action and does not fire a false
+          # positive on a healthy runner. The interesting direction -- a
+          # runtime that enumerates a device it cannot run anything on --
+          # belongs to Intel's Windows runtime and is measured in the
+          # preview job below, where a defect in a third-party runtime
+          # cannot fail a pull request.
+          - { os: ubuntu-24.04,      runtime: auto, verify: 'true',  require-fp64: 'false', require-kernel: 'true', expect: '>=1' }
           - { os: windows-2022,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           - { os: windows-2025,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
           # cache has no coverage otherwise: every leg above either omits it
@@ -83,6 +93,8 @@ jobs:
           runtime: ${{ matrix.runtime }}
           verify: ${{ matrix.verify }}
           require-fp64: ${{ matrix.require-fp64 }}
+          # Same '' || default idiom as cache below.
+          require-kernel: ${{ matrix.require-kernel || 'false' }}
           # Most legs don't set matrix.cache, which makes this an empty
           # string -- '' || 'true' falls back to the action's own default.
           # A leg that does set matrix.cache (a non-empty string, including
@@ -98,6 +110,7 @@ jobs:
           SE_DEVICE_NAME: ${{ steps.setup.outputs.device-name }}
           SE_PLATFORM_VERSION: ${{ steps.setup.outputs.platform-version }}
           SE_FP64: ${{ steps.setup.outputs.fp64 }}
+          SE_KERNEL: ${{ steps.setup.outputs.kernel }}
           SE_RUNTIME_NAME: ${{ steps.setup.outputs.runtime-name }}
         run: |
           set -euo pipefail
@@ -107,9 +120,28 @@ jobs:
           echo "device-name     = ${SE_DEVICE_NAME}"
           echo "platform-version= ${SE_PLATFORM_VERSION}"
           echo "fp64            = ${SE_FP64}"
+          echo "kernel          = ${SE_KERNEL}"
 
           if [ -z "${SE_DEVICE_COUNT}" ]; then
             echo "::error::The action produced no device-count output"
+            exit 1
+          fi
+
+          # kernel must always reach the caller as a real value. An empty
+          # string here means the output never got wired through -- which is
+          # indistinguishable, to a consumer branching on it, from "false".
+          case "${SE_KERNEL}" in
+            true|false) ;;
+            *)
+              echo "::error::The action produced kernel='${SE_KERNEL}'; expected 'true' or 'false'"
+              exit 1
+              ;;
+          esac
+
+          # There is no device to have run anything on, so any other value is
+          # the action reporting a result it cannot have measured.
+          if [ "${SE_DEVICE_COUNT}" -eq 0 ] && [ "${SE_KERNEL}" != "false" ]; then
+            echo "::error::device-count is 0 but kernel is '${SE_KERNEL}'; it must be false when there is no device"
             exit 1
           fi
 
@@ -185,6 +217,16 @@ jobs:
           # runtime intel on Windows, and this is a second full ~110 MB
           # runtime download alongside the two already in Tier-1.
           - { os: windows-2025,      runtime: intel, version: '2026-WW22', expect: '>=1' }
+          # The one leg that asserts a device can actually run something on
+          # Windows. Intel's oclcpuexp is the runtime this action installs
+          # there, and it has shipped generations whose kernel compiler dies
+          # with 0xC0000005 inside common_clang64.dll on every build while
+          # still enumerating a healthy fp64 device -- the failure the
+          # 'kernel' output exists to expose. This belongs in the preview
+          # job, not Tier 1: the defect would be in a third-party runtime,
+          # and a pull request touching this action should not go red for
+          # it. Nightly, best effort, and loud when it fires.
+          - { os: windows-2025,      runtime: intel, require-kernel: 'true', expect: '>=1' }
 
     steps:
       - name: Checkout the action
@@ -196,6 +238,7 @@ jobs:
         with:
           runtime: ${{ matrix.runtime }}
           version: ${{ matrix.version }}
+          require-kernel: ${{ matrix.require-kernel || 'false' }}
 
       # Mirrors the Tier-1 assertion exactly (see "Confirm the action
       # reported a device" above): both need set -euo pipefail and both
@@ -209,6 +252,7 @@ jobs:
           SE_DEVICE_NAME: ${{ steps.setup.outputs.device-name }}
           SE_PLATFORM_VERSION: ${{ steps.setup.outputs.platform-version }}
           SE_FP64: ${{ steps.setup.outputs.fp64 }}
+          SE_KERNEL: ${{ steps.setup.outputs.kernel }}
           SE_RUNTIME_NAME: ${{ steps.setup.outputs.runtime-name }}
         run: |
           set -euo pipefail
@@ -218,11 +262,20 @@ jobs:
           echo "device-name     = ${SE_DEVICE_NAME}"
           echo "platform-version= ${SE_PLATFORM_VERSION}"
           echo "fp64            = ${SE_FP64}"
+          echo "kernel          = ${SE_KERNEL}"
 
           if [ -z "${SE_DEVICE_COUNT}" ]; then
             echo "::error::The action produced no device-count output"
             exit 1
           fi
+
+          case "${SE_KERNEL}" in
+            true|false) ;;
+            *)
+              echo "::error::The action produced kernel='${SE_KERNEL}'; expected 'true' or 'false'"
+              exit 1
+              ;;
+          esac
 
           case "${SE_EXPECT}" in
             '>='*)
@@ -249,14 +302,15 @@ jobs:
   # of the four had ever actually been exercised in CI: an unknown
   # 'runtime', 'pocl'/'apple' on Windows, 'intel' on Linux/macOS, and
   # Windows on ARM64. Each leg below passes exactly one invalid input and
-  # otherwise-valid ones, so the resolve step in action.yml can only reach
-  # this leg's specific validation branch -- no other branch is reachable
-  # given the rest of the inputs are valid. That single-variable isolation
-  # is what "confirm it failed for the right reason" rests on here, since
-  # steps.<id>.outcome alone can only say *that* the action failed, not
-  # *why*. Every leg is cheap: the resolve step is the first step of the
-  # composite and runs no download or install, so a leg here fails in
-  # seconds even on the ARM64 Windows runner.
+  # otherwise-valid ones, so only this leg's specific validation branch is
+  # reachable -- no other branch is, given the rest of the inputs are valid.
+  # That single-variable isolation is what "confirm it failed for the right
+  # reason" rests on here, since steps.<id>.outcome alone can only say
+  # *that* the action failed, not *why*. Every leg is cheap: the four
+  # input-validation legs are caught by the resolve step, the first step of
+  # the composite, which runs no download or install, and the digest leg is
+  # caught while resolving the release asset, still before any archive is
+  # fetched. Each fails in seconds, even on the ARM64 Windows runner.
   reject:
     name: reject ${{ matrix.reason }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -271,6 +325,16 @@ jobs:
           - { os: ubuntu-24.04,   reason: intel-on-linux,    runtime: intel }
           - { os: macos-latest,   reason: intel-on-macos,    runtime: intel }
           - { os: windows-11-arm, reason: windows-arm64,     runtime: auto }
+          # The 'version-sha256' escape hatch must never become a way to
+          # install something unverified, so the case that matters is the
+          # one where the caller's digest and the GitHub API's disagree: the
+          # run has to stop rather than pick a winner. 2026-WW22 is a tag
+          # the preview job already proves resolvable and whose asset the
+          # API does report a digest for, and 64 zeros is a well-formed
+          # digest that cannot be it. Cheap: Resolve-RuntimeAsset runs
+          # before any archive is fetched, so this leg fails in seconds
+          # without downloading the ~110 MB runtime.
+          - { os: windows-2022,   reason: digest-disagreement, runtime: intel, version: '2026-WW22', version-sha256: '0000000000000000000000000000000000000000000000000000000000000000' }
 
     steps:
       - name: Checkout the action
@@ -282,6 +346,8 @@ jobs:
         uses: ./
         with:
           runtime: ${{ matrix.runtime }}
+          version: ${{ matrix.version }}
+          version-sha256: ${{ matrix.version-sha256 }}
 
       - name: Confirm the action rejected this combination
         shell: bash

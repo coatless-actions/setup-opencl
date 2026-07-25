@@ -25,6 +25,18 @@ precise about that:
   not a pin against a value fixed in advance. If the API reports no digest
   for the resolved asset, the download is refused outright rather than
   proceeding unverified.
+- **`version-sha256:` override**: the caller states the digest they expect
+  for the asset `version:` selects, and the download is verified against
+  that. This is a stronger guarantee than the API-reported digest above --
+  the value is fixed in the workflow ahead of time rather than fetched
+  alongside the download -- but only as strong as the caller's own
+  out-of-band check that the digest describes the file they intend. When
+  the API reports a digest too, the two must agree or the run fails and
+  installs nothing; the action never picks a winner. No combination of
+  inputs downloads an archive without a digest check. The cache-hit
+  exemption noted above still applies -- nothing is downloaded, so nothing
+  is re-hashed -- but the expected digest is part of the cache key, so an
+  archive cached under one expectation can never satisfy a different one.
 
 ## Supported versions
 

@@ -12,7 +12,11 @@ inputs:
     required: false
     default: 'auto'
   version:
-    description: 'Pin the runtime version. Only honored for runtime "intel" on Windows; ignored with a warning elsewhere (default: the tested version for this runner). Verified against the digest the GitHub API reports for that release, not a pinned one, and the job fails if none is published'
+    description: 'Pin the runtime version. Only honored for runtime "intel" on Windows; ignored with a warning elsewhere (default: the tested version for this runner). Verified against the digest the GitHub API reports for that release, not a pinned one, and the job fails if none is published and none is supplied via "version-sha256"'
+    required: false
+    default: ''
+  version-sha256:
+    description: 'Expected SHA-256 (64 hex characters) of the pinned release asset selected by "version". Only needed for a release whose asset predates the digest the GitHub API now reports; supply it and the download is verified against this value instead. Must agree with the API digest when both exist. Ignored, with a warning, when "version" is unset'
     required: false
     default: ''
   verify:
@@ -21,6 +25,10 @@ inputs:
     default: 'true'
   require-fp64:
     description: 'Also fail when the device does not support double precision ("true" or "false")'
+    required: false
+    default: 'false'
+  require-kernel:
+    description: 'Also fail when the device cannot actually run a kernel ("true" or "false"). A device that enumerates but cannot compile or execute anything always produces a warning; this makes it fatal'
     required: false
     default: 'false'
   cache:
@@ -56,6 +64,9 @@ outputs:
   fp64:
     description: 'Whether the first device reports double-precision support ("true" or "false")'
     value: ${{ steps.probe.outputs.fp64 }}
+  kernel:
+    description: 'Whether the first device actually ran a kernel and returned the right numbers ("true" or "false"). Unlike every other probe output this is measured by executing something, not by asking the device what it claims. False whenever device-count is 0, and false when the round trip could not be run at all'
+    value: ${{ steps.probe.outputs.kernel }}
 
 runs:
   using: 'composite'
@@ -68,8 +79,10 @@ runs:
       env:
         SE_RUNTIME: ${{ inputs.runtime }}
         SE_VERSION: ${{ inputs.version }}
+        SE_VERSION_SHA256: ${{ inputs.version-sha256 }}
         SE_VERIFY: ${{ inputs.verify }}
         SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
+        SE_REQUIRE_KERNEL: ${{ inputs.require-kernel }}
         SE_CACHE: ${{ inputs.cache }}
         SE_OS: ${{ runner.os }}
         SE_ARCH: ${{ runner.arch }}
@@ -85,7 +98,7 @@ runs:
             ;;
         esac
 
-        for name in SE_VERIFY SE_REQUIRE_FP64 SE_CACHE; do
+        for name in SE_VERIFY SE_REQUIRE_FP64 SE_REQUIRE_KERNEL SE_CACHE; do
           value="${!name}"
           if [ "${value}" != "true" ] && [ "${value}" != "false" ]; then
             echo "::error::Input ${name#SE_} must be \"true\" or \"false\", got '${value}'"
@@ -155,6 +168,29 @@ runs:
           echo "::warning::The 'version' input is only honored for runtime 'intel' on Windows; ignoring it for runtime '${resolved}'"
         fi
 
+        # version-sha256 is the expected digest *of the asset that 'version'
+        # selects*, so without a version there is no asset for it to describe
+        # -- the pinned default carries its own digest in install-windows.ps1
+        # and this input can neither replace nor override it.
+        if [ -n "${SE_VERSION_SHA256}" ]; then
+          if [ -z "${SE_VERSION}" ]; then
+            echo "::warning::The 'version-sha256' input describes the asset that 'version' selects; ignoring it because 'version' is unset. The pinned default runtime is verified against a digest fixed in this action's own source."
+          elif [ "${resolved}" != "intel" ]; then
+            echo "::warning::The 'version-sha256' input is only honored for runtime 'intel' on Windows; ignoring it for runtime '${resolved}'"
+          fi
+
+          # Checked here, in the first step, rather than where it is used: a
+          # typo in a 64-character hex string is easy to make and would
+          # otherwise surface only after the ~110 MB runtime archive had
+          # already been downloaded. install-windows.ps1 validates it again
+          # for its own sake -- it is runnable outside this action.
+          if ! printf '%s' "${SE_VERSION_SHA256}" | grep -Eqi '^[0-9a-f]{64}$'; then
+            echo "::error::Input version-sha256 must be a 64-character hex SHA-256 digest"
+            echo "Got '${SE_VERSION_SHA256}'. Obtain the value with 'sha256sum <asset>' (or 'Get-FileHash -Algorithm SHA256') on a copy of the release asset you have verified out of band, and pass the bare hex digest with no 'sha256:' prefix."
+            exit 1
+          fi
+        fi
+
         echo "resolved-runtime=${resolved}" >> "$GITHUB_OUTPUT"
 
         # The env context excludes variables inherited by the runner process,
@@ -197,7 +233,12 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}\opencl
-        key: opencl-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.image-os-version }}-${{ steps.resolve.outputs.resolved-runtime }}-${{ inputs.version }}-${{ steps.resolve.outputs.script-hash }}
+        # version-sha256 is part of the key, not decoration. A cache hit skips
+        # both the download and Assert-FileHash, so without it a second run
+        # pinning the same tag with a DIFFERENT expected digest would restore
+        # the first run's archive and never compare the new value -- quietly
+        # breaking the "the two must agree or the run fails" guarantee.
+        key: opencl-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.image-os-version }}-${{ steps.resolve.outputs.resolved-runtime }}-${{ inputs.version }}-${{ inputs.version-sha256 }}-${{ steps.resolve.outputs.script-hash }}
 
     - name: Install OpenCL
       id: install
@@ -234,6 +275,7 @@ runs:
       env:
         SE_RUNTIME: ${{ steps.resolve.outputs.resolved-runtime }}
         SE_VERSION: ${{ inputs.version }}
+        SE_VERSION_SHA256: ${{ inputs.version-sha256 }}
         # Only used when 'version' is set, to resolve the release's asset
         # name without hitting the GitHub API's anonymous rate limit.
         GITHUB_TOKEN: ${{ github.token }}
@@ -378,7 +420,15 @@ runs:
         SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
         SE_VERIFY: ${{ inputs.verify }}
         SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
+        SE_REQUIRE_KERNEL: ${{ inputs.require-kernel }}
         SE_LOADER_BIN_DIR: ${{ steps.install-windows.outputs.loader-bin-dir }}
+        # Read from the collect step's outputs rather than the OPENCL_CPPFLAGS
+        # / OPENCL_LIBS the export step just published: a caller who pre-set
+        # those keeps their own values (set_env's caller-wins rule), and the
+        # kernel round trip must be built against the SDK this action actually
+        # installed, not against whatever a caller pointed those at.
+        SE_CPPFLAGS: ${{ steps.collect.outputs.opencl-cppflags }}
+        SE_LIBS: ${{ steps.collect.outputs.opencl-libs }}
       run: |
         $ErrorActionPreference = 'Stop'
         $clinfo = Join-Path $env:SE_LOADER_BIN_DIR 'clinfo.exe'
@@ -413,6 +463,129 @@ runs:
         "platform-version=$(if ($ver.Success) { $ver.Groups[1].Value.Trim() })" | Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
         "fp64=$fp64"                                                     | Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
 
+        # clinfo reports what a device claims. It cannot report whether the
+        # device works, and it never could: on a windows-2025 runner whose
+        # Intel oclcpuexp runtime died with 0xC0000005 inside
+        # common_clang64.dll on every single kernel build, every line clinfo
+        # printed above was accurate and healthy-looking. So the four keys
+        # above still come from clinfo -- unchanged, byte for byte what v1
+        # consumers already read -- and 'kernel' comes from the same
+        # scripts/probe.c the POSIX path uses, compiled here against the SDK
+        # this action just installed and run as its own process.
+        #
+        # That needs a C compiler, which this path has never needed before.
+        # GitHub's windows-* images ship mingw gcc on PATH (the sibling
+        # setup-clblast action compiles its GEMM verifier with it on every
+        # Windows run), but a self-hosted or container runner may not have
+        # one. Losing the four enumeration keys over a dependency added for a
+        # fifth would be a regression for every existing consumer, so a
+        # missing compiler costs this key alone and says so out loud.
+        $kernel = 'false'
+        $kernelReason = ''
+
+        $compiler = $null
+        foreach ($candidate in @('gcc', 'clang', 'cc')) {
+          if (Get-Command $candidate -ErrorAction SilentlyContinue) { $compiler = $candidate; break }
+        }
+
+        if (-not $compiler) {
+          $kernelReason = "no C compiler ('gcc', 'clang' or 'cc') was found on PATH, so the kernel round trip could not be built"
+        } else {
+          $probeDir = Join-Path $env:RUNNER_TEMP 'setup-opencl-probe'
+          New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
+          $probeExe = Join-Path $probeDir 'probe.exe'
+          $probeSrc = Join-Path $env:GITHUB_ACTION_PATH 'scripts\probe.c'
+
+          # Each of these arrives as one string holding one or more flags
+          # ("-I<dir>", "-L<dir> -lOpenCL"); PowerShell would pass an
+          # unsplit string as a single argument and gcc would reject it.
+          # Order matters: the library flags follow the source file, which
+          # is what GNU ld requires to resolve symbols out of OpenCL.lib.
+          $flags = @()
+          foreach ($group in @($env:SE_CPPFLAGS, $env:SE_LIBS)) {
+            if ($group) {
+              $flags += $group.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+            }
+          }
+
+          # Same reasoning as the clinfo call above: a native command's
+          # stderr merged with 2>&1 can raise a terminating NativeCommandError
+          # under 'Stop', and neither a compiler diagnostic nor a crashing
+          # probe is a reason to fail this step. Both are results to report.
+          $previousEap = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            $buildLog = & $compiler -o $probeExe $probeSrc @flags 2>&1 | Out-String
+            $buildStatus = $LASTEXITCODE
+            if ($buildStatus -ne 0) {
+              Write-Output $buildLog
+              $kernelReason = "probe.c did not compile with '$compiler' (exit $buildStatus)"
+            } else {
+              # Run out of process with its streams on disk, rather than as
+              # a pipeline, for two reasons. First, a broken runtime can hang
+              # in the build instead of failing it, and nothing else here
+              # bounds that -- probe.c caps it with alarm() on POSIX, but
+              # Windows has no fork for it to isolate into, and this is the
+              # platform whose runtime is the one known to misbehave. A job
+              # that hangs spends its whole time budget to report nothing.
+              # Second, separate streams keep the build log (stderr) out of
+              # the key=value text being parsed (stdout).
+              $outFile = Join-Path $probeDir 'probe.out'
+              $errFile = Join-Path $probeDir 'probe.err'
+              $proc = Start-Process -FilePath $probeExe -NoNewWindow -PassThru `
+                        -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+              $timedOut = -not $proc.WaitForExit(120000)
+              if ($timedOut) {
+                $proc.Kill()
+                $proc.WaitForExit()
+              }
+              $probeStatus = $proc.ExitCode
+
+              $probeOut = if (Test-Path $outFile) { (Get-Content -Raw $outFile) } else { '' }
+              $probeErr = if (Test-Path $errFile) { (Get-Content -Raw $errFile) } else { '' }
+              Write-Output "Kernel round-trip probe output (its own enumeration keys are informational here; the four keys above come from clinfo):"
+              if ($probeOut) { Write-Output $probeOut }
+              if ($probeErr) { Write-Output $probeErr }
+
+              # probe.c prints and flushes its four enumeration keys before it
+              # touches the round trip, so a runtime that crashes the process
+              # kills it after those and before this line -- which is the
+              # exact failure being measured. A missing line is therefore read
+              # as false, never left unset and never allowed to fail the step.
+              $kernelMatch = [regex]::Match([string]$probeOut, '(?m)^kernel=(true|false)\s*$')
+              if ($timedOut) {
+                $kernelReason = "the probe was still running after 120 seconds and was killed, so the runtime hung rather than failing"
+              } elseif ($kernelMatch.Success) {
+                $kernel = $kernelMatch.Groups[1].Value
+              } else {
+                $kernelReason = "the probe exited $probeStatus without reporting a 'kernel' result, which is what a runtime that crashes the process looks like"
+              }
+            }
+          } finally {
+            $ErrorActionPreference = $previousEap
+          }
+        }
+
+        "kernel=$kernel" | Tee-Object -FilePath $env:GITHUB_OUTPUT -Append
+
+        if ($kernelReason) {
+          Write-Output "::warning::Could not measure whether the device can run a kernel: $kernelReason. Reporting kernel=false."
+        }
+
+        # "A device exists but cannot run anything" is precisely the state
+        # that shipped undetected, so this warning is unconditional: ahead of
+        # the 'runtime: none' exit below and independent of require-kernel.
+        # Whatever the inputs say, this combination must never be silent.
+        #
+        # $kernelReason means the round trip never ran -- no compiler, or
+        # probe.c would not build. That is reported above, and claiming here
+        # that the device "did not produce the expected result" would be a
+        # statement about something that never happened, on exactly the
+        # runners this code goes out of its way to tolerate.
+        if ($count -gt 0 -and -not $kernelReason -and $kernel -ne 'true') {
+          Write-Output "::warning::Found $count OpenCL device(s), but the first one could not run a trivial kernel: the round trip (build, launch, read back, compare the numbers) did not produce the expected result. Code will compile and link against OpenCL on this runner; nothing will execute. The probe's stderr above carries the build log, if the runtime produced one."
+        }
+
         if ($env:SE_RESOLVED -eq 'none') {
           Write-Output "::notice::Installed headers and loader only; $count device(s) found"
           exit 0
@@ -434,6 +607,21 @@ runs:
           exit 1
         }
 
+        # Guarded on the device count for the same reason as the fp64 gate
+        # above: with no device there is nothing to run a kernel on, and a
+        # caller who set 'verify: false' because this runner has no device
+        # should not then be failed for the consequence of that.
+        if ($count -gt 0 -and $env:SE_REQUIRE_KERNEL -eq 'true' -and $kernel -ne 'true') {
+          if ($kernelReason) {
+            Write-Output "::error::Could not measure whether the OpenCL device can run a kernel, and 'require-kernel' is true: $kernelReason"
+            Write-Output "This is not a verdict on the device -- the round trip never ran. Install a C compiler on this runner, or set 'require-kernel' to 'false'."
+          } else {
+            Write-Output "::error::The OpenCL device cannot run a kernel"
+            Write-Output "Set 'require-kernel' to 'false' to reduce this to a warning, or pin a runtime version whose kernel compiler works on this runner (see the 'version' input)."
+          }
+          exit 1
+        }
+
     - name: Probe for an OpenCL device
       id: verify
       if: runner.os != 'Windows'
@@ -442,6 +630,7 @@ runs:
         SE_RESOLVED: ${{ steps.resolve.outputs.resolved-runtime }}
         SE_VERIFY: ${{ inputs.verify }}
         SE_REQUIRE_FP64: ${{ inputs.require-fp64 }}
+        SE_REQUIRE_KERNEL: ${{ inputs.require-kernel }}
       run: |
         set -euo pipefail
 
@@ -454,11 +643,29 @@ runs:
         cc -o "${probe_dir}/probe" "${GITHUB_ACTION_PATH}/scripts/probe.c" \
            ${OPENCL_CPPFLAGS} ${OPENCL_LIBS}
 
+        # The probe's contract is to exit 0 whatever it finds, and it goes to
+        # some length to keep that true on a runtime that crashes: the kernel
+        # round trip runs in a re-executed child, so the process printing the
+        # keys survives a segfault in the runtime's compiler. A non-zero
+        # status here therefore means the probe process itself died, which is
+        # still reachable when that isolation could not be set up. Capture the
+        # status instead of letting `set -e` kill the step on it: the probe
+        # flushes its four enumeration keys before it attempts anything risky,
+        # so its output is still worth reading, and reporting "this device
+        # cannot run a kernel" beats a step that dies with no message at all.
+        set +e
         output="$("${probe_dir}/probe")"
+        probe_status=$?
+        set -e
         printf '%s\n' "${output}"
+
+        if [ "${probe_status}" -ne 0 ]; then
+          echo "::warning::The OpenCL probe exited ${probe_status} instead of its contractual 0, so it was killed rather than returning. Anything it had not printed by then is reported below as a failure."
+        fi
 
         count="$(printf '%s\n' "${output}" | sed -n 's/^device-count=//p')"
         fp64="$(printf '%s\n' "${output}" | sed -n 's/^fp64=//p')"
+        kernel="$(printf '%s\n' "${output}" | sed -n 's/^kernel=//p')"
 
         # `[ "${count}" -eq 0 ]` returns 2 (not 1) on non-numeric input, which
         # inside an `&&` chain in an `if` just makes the condition false --
@@ -475,6 +682,25 @@ runs:
             ;;
         esac
 
+        # Missing or malformed only when the probe died partway through its
+        # own output. The four enumeration keys are printed and flushed as
+        # one uninterrupted block before the round trip begins, so a numeric
+        # device-count above implies all four arrived and 'kernel' is the
+        # only key a crash can still eat. "Not measured" is not "measured
+        # working", so it fails closed to false and says why.
+        # kernel_measured records whether the round trip actually ran, which
+        # is not the same question as whether it succeeded. Only a real
+        # measurement may be reported as a verdict on the device.
+        kernel_measured=1
+        case "${kernel}" in
+          true|false) ;;
+          *)
+            echo "::warning::The OpenCL probe reported no usable 'kernel' result ('${kernel}'); treating it as false"
+            kernel="false"
+            kernel_measured=0
+            ;;
+        esac
+
         # probe.c is fully controlled by this action, so its stdout is safe
         # today, but this is the same key=value-only contract the other
         # three GITHUB_OUTPUT write sites already enforce (see "Install
@@ -485,9 +711,29 @@ runs:
         # it runs after the count check above: a well-formed count implies a
         # 'device-count=...' line was present, so grep is guaranteed at
         # least one match.
+        #
+        # 'kernel' is filtered out of that copy and written from the shell
+        # variable instead, so the value consumers read is the normalized one
+        # above -- a probe that was killed before printing it must still
+        # produce the key, not leave the output unset.
         printf '%s\n' "${output}" | grep -E \
           '^[a-z][a-z0-9-]*=' \
+          | grep -v '^kernel=' \
           >> "$GITHUB_OUTPUT"
+        printf 'kernel=%s\n' "${kernel}" >> "$GITHUB_OUTPUT"
+
+        # "A device exists but cannot run anything" is precisely the state
+        # that shipped undetected, so this warning is unconditional: ahead of
+        # the 'runtime: none' exit below and independent of require-kernel.
+        # Whatever the inputs say, this combination must never be silent.
+        #
+        # Gated on kernel_measured: when the probe died before reporting, the
+        # round trip never ran, and saying the device "did not produce the
+        # expected result" would be a claim about something that never
+        # happened. That case is already reported by the warning above.
+        if [ "${count}" -gt 0 ] && [ "${kernel_measured}" -eq 1 ] && [ "${kernel}" != "true" ]; then
+          echo "::warning::Found ${count} OpenCL device(s), but the first one could not run a trivial kernel: the round trip (build, launch, read back, compare the numbers) did not produce the expected result. Code will compile and link against OpenCL on this runner; nothing will execute. The probe's stderr above carries the build log, if the runtime produced one."
+        fi
 
         # Requesting a headers-only install and then failing for having no
         # device would be self-contradictory, so verification is never fatal
@@ -514,11 +760,28 @@ runs:
           exit 1
         fi
 
+        # Guarded on the device count for the same reason as the fp64 gate
+        # above: with no device there is nothing to run a kernel on, and a
+        # caller who set 'verify: false' because this runner has no device
+        # should not then be failed for the consequence of that.
+        if [ "${count}" -gt 0 ] && [ "${SE_REQUIRE_KERNEL}" = "true" ] && [ "${kernel}" != "true" ]; then
+          if [ "${kernel_measured}" -eq 0 ]; then
+            echo "::error::Could not measure whether the OpenCL device can run a kernel, and 'require-kernel' is true"
+            echo "This is not a verdict on the device -- the round trip never reported. Set 'require-kernel' to 'false', or investigate the probe warning above."
+            exit 1
+          fi
+          echo "::error::The OpenCL device cannot run a kernel"
+          echo "Set 'require-kernel' to 'false' to reduce this to a warning, or pin a runtime version whose kernel compiler works on this runner (see the 'version' input)."
+          exit 1
+        fi
+
     # Merges the two probe outputs the same way the install outputs are
     # merged: a shell step, never `||`. device-count is legitimately 0 on
-    # every headers-only run and fp64 is legitimately false, and both are
-    # falsy to Actions' `||`, so a coalescing expression would blank out
-    # exactly the values the `runtime: none` legs exist to assert.
+    # every headers-only run and fp64 and kernel are legitimately false, and
+    # all three are falsy to Actions' `||`, so a coalescing expression would
+    # blank out exactly the values the `runtime: none` legs exist to assert
+    # -- and would turn the one output that reports a broken device into an
+    # empty string precisely when it has something to say.
     - name: Collect probe results
       id: probe
       shell: bash
@@ -531,6 +794,8 @@ runs:
         SE_WIN_PLATFORM: ${{ steps.verify-windows.outputs.platform-version }}
         SE_NIX_FP64: ${{ steps.verify.outputs.fp64 }}
         SE_WIN_FP64: ${{ steps.verify-windows.outputs.fp64 }}
+        SE_NIX_KERNEL: ${{ steps.verify.outputs.kernel }}
+        SE_WIN_KERNEL: ${{ steps.verify-windows.outputs.kernel }}
       run: |
         set -euo pipefail
         if [ "${RUNNER_OS}" = "Windows" ]; then side="WIN"; else side="NIX"; fi
@@ -539,7 +804,7 @@ runs:
         # results" -- easier to audit than eval, and identically preserves a
         # legitimate 0/false from a genuinely unset variable.
         for pair in COUNT:device-count NAME:device-name \
-                    PLATFORM:platform-version FP64:fp64; do
+                    PLATFORM:platform-version FP64:fp64 KERNEL:kernel; do
           key="${pair%%:*}"
           outname="${pair#*:}"
           var="SE_${side}_${key}"

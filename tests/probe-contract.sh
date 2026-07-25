@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 #
-# Asserts the probe's output contract: four keys, always exit 0, and a device
+# Asserts the probe's output contract: five keys, always exit 0, and a device
 # count that is a non-negative integer. Run from the repository root.
+#
+# "Always exit 0" is asserted rather than assumed. The probe runs the kernel
+# round trip in a re-executed child precisely so that a runtime which crashes
+# or hangs inside it still leaves the probe itself exiting 0 with a complete
+# set of keys, and this is where that guarantee is checked.
 #
 # Usage: tests/probe-contract.sh [expectation]
 #   expectation defaults to >=1. Two forms are accepted:
@@ -47,7 +52,7 @@ status=$?
 
 [ "${status}" -eq 0 ] || fail "probe exited ${status}, expected 0"
 
-for key in device-count device-name platform-version fp64; do
+for key in device-count device-name platform-version fp64 kernel; do
     printf '%s\n' "${output}" | grep -q "^${key}=" \
         || fail "missing key '${key}' in output:
 ${output}"
@@ -63,6 +68,20 @@ case "${fp64}" in
     true|false) ;;
     *) fail "fp64 '${fp64}' is not 'true' or 'false'" ;;
 esac
+
+kernel="$(printf '%s\n' "${output}" | sed -n 's/^kernel=//p')"
+case "${kernel}" in
+    true|false) ;;
+    *) fail "kernel '${kernel}' is not 'true' or 'false'" ;;
+esac
+
+# kernel reports a round trip that ran and produced the right numbers, so with
+# nothing to run it on there is only one honest answer. A 'true' here would
+# mean the probe claimed a result from a device that does not exist.
+if [ "${count}" -eq 0 ] && [ "${kernel}" != "false" ]; then
+    fail "kernel is '${kernel}' with device-count 0; it must be false when there is no device
+${output}"
+fi
 
 if [ "${mode}" = "exact" ]; then
     [ "${count}" -eq "${expected}" ] \

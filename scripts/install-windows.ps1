@@ -32,21 +32,50 @@
     response used to resolve the asset name, moments before the archive is
     fetched from that same origin. That is a transport check -- it catches
     corruption or interception between API call and download -- not a pin
-    against a value fixed in advance. If the API reports no digest for the
-    resolved asset (which happens for assets uploaded before GitHub started
-    computing the field), there is nothing to verify the download against,
-    so the download is refused outright rather than trusting an unverified
-    110 MB binary that is about to be registered machine-wide.
+    against a value fixed in advance.
+
+    Some releases have no API-reported digest at all: GitHub only began
+    computing the field at a certain point, and assets uploaded before then
+    report nothing. Refusing to install those is correct -- an unverified
+    110 MB binary is about to be registered machine-wide -- but it left a
+    legitimate pin with no way through, which is how intel/llvm's 2025-WW13
+    (the last oclcpuexp built on LLVM 20, and therefore the one worth
+    testing against a kernel compiler that crashes on LLVM 22) became
+    uninstallable. VersionSha256 is the way through: the caller states the
+    digest they expect, and the download is verified against that instead.
+    It never weakens anything. When the API reports a digest too, the two
+    must agree or the run fails; when the caller supplies nothing and the
+    API reports nothing, the refusal stands. Every DOWNLOAD passes through
+    Assert-FileHash. A cache hit is the one path that does not, because it
+    downloads nothing; the expected digest is part of the cache key instead,
+    so a changed expectation can never be satisfied by an archive cached
+    under a different one.
 #>
 
 [CmdletBinding()]
 param(
-    [string] $Runtime    = $env:SE_RUNTIME,
-    [string] $Version    = $env:SE_VERSION,
-    [string] $InstallDir = "$env:RUNNER_TEMP\opencl"
+    [string] $Runtime       = $env:SE_RUNTIME,
+    [string] $Version       = $env:SE_VERSION,
+    [string] $VersionSha256 = $env:SE_VERSION_SHA256,
+    [string] $InstallDir    = "$env:RUNNER_TEMP\opencl"
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Validated here as well as in action.yml's resolve step, because this script
+# is runnable on its own. Rejecting a malformed value up front also keeps it
+# out of the comparison below: anything that is not a digest can only ever
+# mismatch, and "SHA-256 mismatch" reads as "this download was tampered
+# with", which is a far more alarming diagnosis than "you mistyped it".
+if ($VersionSha256) {
+    $VersionSha256 = $VersionSha256.Trim()
+    if ($VersionSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+        Write-Output "::error::Input version-sha256 must be a 64-character hex SHA-256 digest"
+        Write-Output "Got '$VersionSha256'. Obtain the value with 'Get-FileHash -Algorithm SHA256 <file>' (or 'sha256sum <file>') and pass the bare hex digest, with no 'sha256:' prefix."
+        exit 1
+    }
+    $VersionSha256 = $VersionSha256.ToLowerInvariant()
+}
 
 # Pinned defaults. update-runtime.yml opens a PR when a newer tag appears,
 # and refreshes the paired SHA-256 alongside it. The '=' sits in the same
@@ -97,12 +126,25 @@ function Assert-FileHash([string] $Path, [string] $Expected, [string] $Label) {
 # above is: the digest and the archive both come from the same GitHub-hosted
 # origin, resolved minutes apart, so it verifies transport integrity (the
 # download matches what the API just described) rather than authenticity
-# against a value fixed ahead of time. If the field is ever absent (assets
-# uploaded before GitHub started computing it, or one still processing),
-# there is nothing to verify the archive against before it is extracted and
-# registered machine-wide in HKLM, so resolution fails closed with this
-# project's ::error:: contract instead of proceeding unverified.
-function Resolve-RuntimeAsset([string] $Tag) {
+# against a value fixed ahead of time.
+#
+# $CallerSha256 is the escape hatch for assets that report no digest at all
+# (uploaded before GitHub began computing the field, or still processing).
+# It is only ever an additional or a substitute *check*, never a way past
+# one, so exactly three things can happen:
+#
+#   both present   -- they must agree; a disagreement fails the run, because
+#                     one of the two is describing a different file and
+#                     guessing which is not this script's call to make
+#   caller only    -- verify against the caller's value, which is a stronger
+#                     pin than the API digest ever was: it is fixed in the
+#                     workflow ahead of time rather than fetched alongside
+#                     the download
+#   API only       -- verify against the API's, exactly as before
+#
+# and when there is neither, resolution still fails closed with this
+# project's ::error:: contract rather than proceeding unverified.
+function Resolve-RuntimeAsset([string] $Tag, [string] $CallerSha256) {
     $headers = @{ 'Accept' = 'application/vnd.github+json' }
     if ($env:GITHUB_TOKEN) {
         # Avoids anonymous rate limiting on busy runners; works without it too.
@@ -127,23 +169,50 @@ function Resolve-RuntimeAsset([string] $Tag) {
         exit 1
     }
 
-    if (-not ($asset.digest -and $asset.digest -match '^sha256:([0-9a-fA-F]{64})$')) {
-        Write-Output "::error::intel/llvm release '$Tag' asset '$($asset.name)' has no SHA-256 digest reported by the GitHub API"
-        Write-Output "There is nothing to verify this download against, so it is refused rather than installed unverified. Use the pinned default (omit 'version'), or supply a tag whose asset has a published digest."
-        exit 1
+    $apiSha256 = $null
+    if ($asset.digest -and $asset.digest -match '^sha256:([0-9a-fA-F]{64})$') {
+        $apiSha256 = $Matches[1].ToLowerInvariant()
     }
-    $sha256 = $Matches[1]
 
-    return [PSCustomObject]@{ Name = $asset.name; Sha256 = $sha256 }
+    if ($apiSha256 -and $CallerSha256) {
+        if ($apiSha256 -ne $CallerSha256) {
+            Write-Output "::error::The 'version-sha256' input disagrees with the digest the GitHub API reports for intel/llvm release '$Tag' asset '$($asset.name)'"
+            Write-Output "Supplied $CallerSha256, API reports $apiSha256. The two are describing different files, and this script will not pick a winner. Re-derive the digest from the asset at https://github.com/intel/llvm/releases/tag/$Tag; if it keeps disagreeing, treat that as a sign the asset was replaced in place and verify out of band before trusting either value. Dropping the input to make this go away would install the file the API describes without ever having checked it against what you expected."
+            exit 1
+        }
+        return [PSCustomObject]@{ Name = $asset.name; Sha256 = $apiSha256; Source = 'the GitHub API, matching the version-sha256 input' }
+    }
+
+    if ($CallerSha256) {
+        Write-Host "GitHub reports no digest for '$($asset.name)'; verifying the download against the caller-supplied version-sha256 instead."
+        return [PSCustomObject]@{ Name = $asset.name; Sha256 = $CallerSha256; Source = 'the version-sha256 input' }
+    }
+
+    if ($apiSha256) {
+        return [PSCustomObject]@{ Name = $asset.name; Sha256 = $apiSha256; Source = 'the GitHub API' }
+    }
+
+    Write-Output "::error::intel/llvm release '$Tag' asset '$($asset.name)' has no SHA-256 digest reported by the GitHub API"
+    Write-Output "There is nothing to verify this download against, so it is refused rather than installed unverified. Either use the pinned default (omit 'version'), pick a tag whose asset has a published digest, or state the digest you expect with the 'version-sha256' input. To obtain it: fetch https://github.com/intel/llvm/releases/download/$Tag/$($asset.name) once, satisfy yourself out of band that the copy is genuine, and hash it with 'Get-FileHash -Algorithm SHA256 <file>' (or 'sha256sum <file>'). That turns a moving target into a pin fixed in your workflow; it does not by itself authenticate the origin, which is why the out-of-band step matters."
+    exit 1
 }
 
 if ($Version) {
     # Only reassign after a successful resolution -- never fall back to the
     # pinned default silently on a bad tag.
     $RuntimeTag = $Version
-    $resolved   = Resolve-RuntimeAsset -Tag $RuntimeTag
+    $resolved   = Resolve-RuntimeAsset -Tag $RuntimeTag -CallerSha256 $VersionSha256
     $RuntimeFile   = $resolved.Name
     $RuntimeSha256 = $resolved.Sha256
+    $RuntimeShaSource = $resolved.Source
+} else {
+    $RuntimeShaSource = 'this script''s pinned default'
+    if ($VersionSha256) {
+        # The pinned default carries its own digest above, refreshed by
+        # update-runtime.yml alongside the tag it belongs to. A caller-supplied
+        # digest cannot replace it: it would describe a different release.
+        Write-Output "::warning::The 'version-sha256' input describes the asset that 'version' selects; ignoring it because 'version' is unset. The pinned default runtime is verified against the digest fixed in this script."
+    }
 }
 $RuntimeUrl = "https://github.com/intel/llvm/releases/download/$RuntimeTag/$RuntimeFile"
 Write-Host "Resolved Intel CPU runtime release: tag=$RuntimeTag asset=$RuntimeFile"
@@ -248,10 +317,12 @@ if (-not $found) {
     $rtZip = Join-Path $InstallDir 'oclcpuexp.zip'
     Invoke-WebRequest -Uri $RuntimeUrl -OutFile $rtZip
     # $RuntimeSha256 is always non-null here: the pinned default hardcodes
-    # it above, and Resolve-RuntimeAsset exits before returning if the
-    # GitHub API reported no digest for an overriding tag's asset. There is
-    # deliberately no fallback path that skips this check.
-    Assert-FileHash -Path $rtZip -Expected $RuntimeSha256 -Label "Intel CPU runtime archive ($RuntimeTag)"
+    # it above, and Resolve-RuntimeAsset exits before returning unless it
+    # has a digest from the GitHub API, from the caller, or from both in
+    # agreement. There is deliberately no fallback path that skips this
+    # check. The label names which of the three it was, so a mismatch says
+    # what the expected value was being trusted for.
+    Assert-FileHash -Path $rtZip -Expected $RuntimeSha256 -Label "Intel CPU runtime archive ($RuntimeTag, digest from $RuntimeShaSource)"
     New-Item -ItemType Directory -Force -Path $rtDir | Out-Null
     Expand-Archive -Path $rtZip -DestinationPath $rtDir -Force
     Remove-Item -Force $rtZip
