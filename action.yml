@@ -11,6 +11,10 @@ inputs:
     description: 'OpenCL runtime to install: pocl, intel, apple, none, or auto (default: derived from runner.os)'
     required: false
     default: 'auto'
+  pocl-source:
+    description: 'Where PoCL comes from on macOS: homebrew, conda-forge, or auto. Only honored for runtime "pocl" on macOS; ignored with a warning elsewhere. "auto" currently resolves to "homebrew", whose PoCL is built against llvm@21 and miscompiles OpenCL kernels (llvm#161077) -- "conda-forge" installs one built against LLVM 19 instead'
+    required: false
+    default: 'auto'
   version:
     description: 'Pin the runtime version. Only honored for runtime "intel" on Windows; ignored with a warning elsewhere (default: the tested version for this runner). Verified against the digest the GitHub API reports for that release, not a pinned one, and the job fails if none is published and none is supplied via "version-sha256"'
     required: false
@@ -78,6 +82,7 @@ runs:
       shell: bash
       env:
         SE_RUNTIME: ${{ inputs.runtime }}
+        SE_POCL_SOURCE: ${{ inputs.pocl-source }}
         SE_VERSION: ${{ inputs.version }}
         SE_VERSION_SHA256: ${{ inputs.version-sha256 }}
         SE_VERIFY: ${{ inputs.verify }}
@@ -94,6 +99,15 @@ runs:
           *)
             echo "::error::Unknown runtime '${SE_RUNTIME}'"
             echo "Valid values are: auto, pocl, intel, apple, none."
+            exit 1
+            ;;
+        esac
+
+        case "${SE_POCL_SOURCE}" in
+          auto|homebrew|conda-forge) ;;
+          *)
+            echo "::error::Unknown pocl-source '${SE_POCL_SOURCE}'"
+            echo "Valid values are: auto, homebrew, conda-forge."
             exit 1
             ;;
         esac
@@ -191,7 +205,44 @@ runs:
           fi
         fi
 
+        # 'pocl-source' selects where macOS gets PoCL from, and is scoped to
+        # macOS with runtime pocl: Linux gets PoCL from apt, Windows has no
+        # PoCL at all, and 'apple'/'none' install no runtime for it to choose
+        # a source for. Everywhere else it is ignored with a warning rather
+        # than rejected -- the same treatment 'version' gets outside runtime
+        # intel, and for the same reason: one matrix value has to stay usable
+        # across every leg of a multi-OS job.
+        pocl_source=""
+        if [ "${SE_OS}" = "macOS" ] && [ "${resolved}" = "pocl" ]; then
+          pocl_source="${SE_POCL_SOURCE}"
+
+          # PROVISIONAL, and deliberately so. 'auto' resolves to 'homebrew'
+          # purely to leave the behaviour of every existing v1 consumer
+          # unchanged by this input's arrival. conda-forge is the path known
+          # to produce a PoCL that can actually run kernels on Apple silicon,
+          # and it is expected to become what 'auto' means -- but that was
+          # measured on developer hardware with a full Xcode and twelve
+          # cores, and it has never run on a hosted macOS runner, which has
+          # neither. It becomes the default once this action's own nightly
+          # macOS legs have proven it there, not before.
+          if [ "${pocl_source}" = "auto" ]; then
+            pocl_source="homebrew"
+          fi
+        elif [ "${SE_POCL_SOURCE}" != "auto" ]; then
+          echo "::warning::The 'pocl-source' input is only honored for runtime 'pocl' on macOS; ignoring it on ${SE_OS} for runtime '${resolved}'"
+        fi
+
+        # Fires even though homebrew is what 'auto' currently resolves to.
+        # Shipping a known-broken dependency quietly is the thing this action
+        # exists not to do -- the same reasoning as the unconditional warning
+        # the probe steps emit for a device that enumerates but cannot run a
+        # kernel, which is exactly the failure this one predicts.
+        if [ "${pocl_source}" = "homebrew" ]; then
+          echo "::warning::Homebrew's PoCL is built against llvm@21, whose Clang miscompiles the kernel stubs it generates for OpenCL (llvm#161077 -- fixed in LLVM 22, never backported to 21.1.8). Kernels can segfault at runtime on a device that enumerates as perfectly healthy. Set 'pocl-source: conda-forge' to install a PoCL built against LLVM 19 instead. The install step logs the LLVM version actually linked."
+        fi
+
         echo "resolved-runtime=${resolved}" >> "$GITHUB_OUTPUT"
+        echo "resolved-pocl-source=${pocl_source}" >> "$GITHUB_OUTPUT"
 
         # The env context excludes variables inherited by the runner process,
         # so ${{ env.ImageVersion }} expands to the empty string and would
@@ -204,30 +255,37 @@ runs:
         # documents. Its only consumer is the cache key just below.
         echo "image-os-version=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
 
-        # The Windows cache key must invalidate whenever the pinned SDK/
-        # runtime versions in install-windows.ps1 change, or a cache hit
-        # would keep serving the old artifact even after those pins are
-        # bumped. hashFiles() only sees files under github.workspace (the
-        # caller's checkout), never github.action_path (this action's own
-        # checkout), so the hash is computed here and exposed as an output
-        # instead. Portable across the three runner OSes' bash: sha256sum
-        # (Linux, and present in Git for Windows), shasum (macOS, which has
-        # no sha256sum by default), then cksum as a last-resort fallback
-        # that is virtually universal -- the key only needs to change when
-        # the file does, not be cryptographically strong.
-        script="${GITHUB_ACTION_PATH}/scripts/install-windows.ps1"
-        if command -v sha256sum >/dev/null 2>&1; then
-          script_hash="$(sha256sum "${script}" | cut -d' ' -f1)"
-        elif command -v shasum >/dev/null 2>&1; then
-          script_hash="$(shasum -a 256 "${script}" | cut -d' ' -f1)"
-        else
-          script_hash="$(cksum "${script}" | cut -d' ' -f1)"
-        fi
-        echo "script-hash=${script_hash}" >> "$GITHUB_OUTPUT"
+        # Each cache key must invalidate whenever the pins inside the install
+        # script it caches the work of change -- the SDK and runtime versions
+        # in install-windows.ps1, the pocl and micromamba versions in
+        # install-macos-conda.sh -- or a cache hit would keep serving the old
+        # artifact after those pins were bumped. hashFiles() only sees files
+        # under github.workspace (the caller's checkout), never
+        # github.action_path (this action's own checkout), so the hashes are
+        # computed here and exposed as outputs instead. Portable across the
+        # three runner OSes' bash: sha256sum (Linux, and present in Git for
+        # Windows), shasum (macOS, which has no sha256sum by default), then
+        # cksum as a last-resort fallback that is virtually universal -- a key
+        # only needs to change when the file does, not to be
+        # cryptographically strong.
+        hash_file() {
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$1" | cut -d' ' -f1
+          elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$1" | cut -d' ' -f1
+          else
+            cksum "$1" | cut -d' ' -f1
+          fi
+        }
+        echo "script-hash=$(hash_file "${GITHUB_ACTION_PATH}/scripts/install-windows.ps1")" >> "$GITHUB_OUTPUT"
+        echo "conda-script-hash=$(hash_file "${GITHUB_ACTION_PATH}/scripts/install-macos-conda.sh")" >> "$GITHUB_OUTPUT"
 
-    # Only Windows has a download large enough to be worth caching: the
-    # oclcpuexp archive is roughly 110 MB. Linux apt archives and macOS
-    # bottles are fast enough that caching them is not yet justified.
+    # Windows and the macOS conda-forge path are the two with a download
+    # large enough to be worth caching: the oclcpuexp archive is roughly
+    # 110 MB, and a conda-forge PoCL environment is about 90 MB of packages
+    # that unpack to 400 MB, plus a solve. Linux apt archives and macOS
+    # Homebrew bottles are fast enough that caching them is not yet
+    # justified.
     - name: Restore the OpenCL runtime cache
       if: runner.os == 'Windows' && inputs.cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -240,12 +298,30 @@ runs:
         # breaking the "the two must agree or the run fails" guarantee.
         key: opencl-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.image-os-version }}-${{ steps.resolve.outputs.resolved-runtime }}-${{ inputs.version }}-${{ inputs.version-sha256 }}-${{ steps.resolve.outputs.script-hash }}
 
+    # resolved-pocl-source is only ever non-empty on macOS with runtime pocl,
+    # so this needs no runner.os guard of its own. The path is the same
+    # literal install-macos-conda.sh builds its environment at; change one and
+    # change the other.
+    - name: Restore the conda-forge PoCL environment cache
+      if: steps.resolve.outputs.resolved-pocl-source == 'conda-forge' && inputs.cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/setup-opencl-conda
+        # The script hash carries both pins the environment is built from, so
+        # bumping either rebuilds rather than restoring an environment made
+        # from the old ones. runner.arch is in the key because osx-arm64 and
+        # osx-64 packages are not interchangeable. A restored tree is still
+        # not trusted on sight: install-macos-conda.sh reuses it only when the
+        # stamp file it writes last matches the pins it would build from now.
+        key: opencl-conda-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.image-os-version }}-${{ steps.resolve.outputs.conda-script-hash }}
+
     - name: Install OpenCL
       id: install
       if: runner.os != 'Windows'
       shell: bash
       env:
         SE_RUNTIME: ${{ steps.resolve.outputs.resolved-runtime }}
+        SE_POCL_SOURCE: ${{ steps.resolve.outputs.resolved-pocl-source }}
       run: |
         set -euo pipefail
         case "${RUNNER_OS}" in

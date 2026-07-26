@@ -42,8 +42,17 @@ jobs:
           - { os: macos-latest,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           # Headers and loader only. A device appearing here is a real failure:
           # it means the runtime was installed when it should not have been.
-          - { os: ubuntu-24.04,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
-          - { os: macos-latest,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
+          #
+          # These two also carry the only Tier-1 coverage of 'pocl-source'
+          # being ignored. The input is honored on macOS with runtime pocl and
+          # warned-about everywhere else, and the ignore path had no coverage
+          # at all otherwise: passing it here proves a warned-and-ignored
+          # value still leaves the run correct on both a platform that has no
+          # conda-forge path (Linux) and a runtime that installs nothing to
+          # choose a source for (macOS 'none'). Neither leg pays for a conda
+          # environment, because neither one builds one -- that is the point.
+          - { os: ubuntu-24.04,      runtime: none, verify: 'true',  require-fp64: 'false', pocl-source: conda-forge, expect: '=0' }
+          - { os: macos-latest,      runtime: none, verify: 'true',  require-fp64: 'false', pocl-source: conda-forge, expect: '=0' }
           # Confirmed in CI (not reproducible on bare-metal Apple Silicon,
           # which reports one device): Apple's OpenCL.framework enumerates a
           # platform but returns zero devices on hosted Apple Silicon
@@ -73,7 +82,11 @@ jobs:
           # cannot fail a pull request.
           - { os: ubuntu-24.04,      runtime: auto, verify: 'true',  require-fp64: 'false', require-kernel: 'true', expect: '>=1' }
           - { os: windows-2022,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
-          - { os: windows-2025,      runtime: none, verify: 'true',  require-fp64: 'false', expect: '=0' }
+          # Third ignore leg, on the one platform where 'pocl-source' names a
+          # runtime that does not exist there at all. Free: this leg already
+          # runs, and the input is rejected by neither the resolve step nor
+          # the install.
+          - { os: windows-2025,      runtime: none, verify: 'true',  require-fp64: 'false', pocl-source: conda-forge, expect: '=0' }
           # cache has no coverage otherwise: every leg above either omits it
           # (implicit default 'true') or would need it to be 'true' to
           # verify a device. runtime: none keeps this cheap -- it downloads
@@ -95,6 +108,7 @@ jobs:
           require-fp64: ${{ matrix.require-fp64 }}
           # Same '' || default idiom as cache below.
           require-kernel: ${{ matrix.require-kernel || 'false' }}
+          pocl-source: ${{ matrix.pocl-source || 'auto' }}
           # Most legs don't set matrix.cache, which makes this an empty
           # string -- '' || 'true' falls back to the action's own default.
           # A leg that does set matrix.cache (a non-empty string, including
@@ -209,6 +223,21 @@ jobs:
           - { os: ubuntu-latest,     runtime: auto, expect: '>=1' }
           - { os: macos-latest,      runtime: auto, expect: '>=1' }
           - { os: windows-latest,    runtime: auto, expect: '>=1' }
+          # The two legs that have to go green before 'pocl-source: auto' can
+          # start meaning conda-forge on macOS. Homebrew's PoCL is built
+          # against llvm@21, whose Clang miscompiles OpenCL kernel stubs
+          # (llvm#161077), and conda-forge's is built against LLVM 19 --
+          # measured, but only on developer hardware with a full Xcode and
+          # twelve cores. Whether that survives a hosted runner, which has
+          # neither, is the open question, and these are what answer it.
+          # 'require-kernel' is the whole point: enumerating a device proves
+          # nothing about the defect being routed around here, so this asserts
+          # a kernel actually builds, runs and returns the right numbers.
+          # macos-15-intel is not redundant with macos-latest -- it is the
+          # only leg that exercises the osx-64 micromamba binary and its
+          # pinned digest, which nothing else would ever download.
+          - { os: macos-latest,      runtime: auto, pocl-source: conda-forge, require-kernel: 'true', expect: '>=1' }
+          - { os: macos-15-intel,    runtime: auto, pocl-source: conda-forge, require-kernel: 'true', expect: '>=1' }
           # version has no coverage otherwise: the demo legs that originally
           # proved the asset-resolution path were removed once it was known
           # to work, which left it untested again. Pinning a known-older
@@ -239,6 +268,7 @@ jobs:
           runtime: ${{ matrix.runtime }}
           version: ${{ matrix.version }}
           require-kernel: ${{ matrix.require-kernel || 'false' }}
+          pocl-source: ${{ matrix.pocl-source || 'auto' }}
 
       # Mirrors the Tier-1 assertion exactly (see "Confirm the action
       # reported a device" above): both need set -euo pipefail and both
@@ -320,6 +350,11 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-24.04,   reason: unknown-runtime,   runtime: bogus }
+          # Caught by the same enumeration check as 'runtime' above, in the
+          # resolve step, before any OS scoping applies -- which is why the
+          # cheapest runner is the right place for it even though the input
+          # only does anything on macOS.
+          - { os: ubuntu-24.04,   reason: unknown-pocl-source, runtime: auto, pocl-source: bogus }
           - { os: windows-2022,   reason: pocl-on-windows,   runtime: pocl }
           - { os: windows-2022,   reason: apple-on-windows,  runtime: apple }
           - { os: ubuntu-24.04,   reason: intel-on-linux,    runtime: intel }
@@ -348,6 +383,12 @@ jobs:
           runtime: ${{ matrix.runtime }}
           version: ${{ matrix.version }}
           version-sha256: ${{ matrix.version-sha256 }}
+          # '' || 'auto', not a bare matrix reference: every other leg here
+          # leaves 'pocl-source' unset, and an empty string is a rejected
+          # value for this input. Without the fallback those legs would fail
+          # on the wrong input and still be recorded as correct rejections,
+          # since steps.attempt.outcome can only say *that* the action failed.
+          pocl-source: ${{ matrix.pocl-source || 'auto' }}
 
       - name: Confirm the action rejected this combination
         shell: bash

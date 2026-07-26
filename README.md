@@ -30,6 +30,7 @@ Enumerating a device is not the same as being able to use one, so the action als
 | Input | Description | Default |
 |---|---|---|
 | `runtime` | OpenCL runtime to install: `pocl`, `intel`, `apple`, `none`, or `auto`. `auto` resolves to `pocl` on Linux and macOS and `intel` on Windows. | `auto` |
+| `pocl-source` | Where PoCL comes from on macOS: `homebrew`, `conda-forge`, or `auto`. Only honored for `runtime: pocl` on macOS; ignored, with a warning, for every other platform and runtime. `auto` currently resolves to `homebrew`, whose PoCL miscompiles OpenCL kernels — see [PoCL on macOS](#pocl-on-macos). | `auto` |
 | `version` | Pin the runtime version. Only honored for `runtime: intel` on Windows, where it takes an `intel/llvm` release tag (e.g. `2026-WW22`). Ignored, with a warning, for every other runtime. Verified against the digest the GitHub API reports for that release at resolution time, not a pinned one, and the job fails if the API reports none and `version-sha256` supplies none either. | `''` |
 | `version-sha256` | Expected SHA-256 (64 hex characters, no `sha256:` prefix) of the asset `version` selects. Needed only for a release whose asset predates the digest GitHub now reports. Must agree with the API's digest when both exist. Ignored, with a warning, when `version` is unset. | `''` |
 | `verify` | Fail the job when no OpenCL device is found (`'true'` or `'false'`). Never fatal when `runtime` is `none`. | `true` |
@@ -37,7 +38,7 @@ Enumerating a device is not the same as being able to use one, so the action als
 | `require-kernel` | Also fail when the device cannot actually run a kernel (`'true'` or `'false'`). The state is **always** reported as a warning; this makes it fatal. | `false` |
 | `cache` | Cache downloads and package archives (`'true'` or `'false'`). A no-op on runners with nothing worth caching. | `true` |
 
-`runtime`, `verify`, `require-fp64`, `require-kernel`, and `cache` are validated by hand, since the runner enforces neither input types nor allowed values. An **empty string** (for example `verify: ''`, which is what an absent key in a build matrix expands to) is rejected rather than falling back to the default above — the action cannot distinguish "omitted" from "explicitly empty." Leave the input out of `with:` entirely to get the default, or interpolate a matrix value that is guaranteed to be `'true'`/`'false'` on every leg. `version` and `version-sha256` are strings rather than flags, so an empty value is the documented way to say "unset".
+`runtime`, `pocl-source`, `verify`, `require-fp64`, `require-kernel`, and `cache` are validated by hand, since the runner enforces neither input types nor allowed values. An **empty string** (for example `verify: ''`, which is what an absent key in a build matrix expands to) is rejected rather than falling back to the default above — the action cannot distinguish "omitted" from "explicitly empty." Leave the input out of `with:` entirely to get the default, or interpolate a matrix value that is guaranteed to be `'true'`/`'false'` on every leg. `version` and `version-sha256` are strings rather than flags, so an empty value is the documented way to say "unset".
 
 ## Outputs
 
@@ -60,7 +61,7 @@ When `device-count` is greater than zero and `kernel` is `false`, the action alw
 
 The action also exports `OPENCL_CPPFLAGS`, `OPENCL_LIBS`, `OpenCL_ROOT`, `OpenCL_LIBRARY`, and `OpenCL_INCLUDE_DIR` to the job environment, plus `OCL_ICD_VENDORS` on Linux and macOS (when a vendor ICD was installed), `OCL_ICD_FILENAMES` on Windows, and `SDKROOT` on macOS. On Windows, the loader's `bin` directory (containing `clinfo.exe` and the loader DLL) is also prepended to `PATH`. A caller's own explicit setting of any of these always wins over the action's.
 
-`icd-vendors-path` means three different things depending on the platform: a **file** on Linux (the single `.icd` under `/etc/OpenCL/vendors`), a **directory** on macOS (PoCL's keg-relative vendors directory), and a **vendor DLL path** on Windows (the value passed to `OCL_ICD_FILENAMES` and written to the registry). Each is correct for its own loader, but none of them is a portable value: a workflow that does, say, `export OCL_ICD_VENDORS=${{ steps.opencl.outputs.icd-vendors-path }}` to work identically across platforms will get three different semantics, and on Windows that variable is the wrong one entirely. Do not wire this output up yourself — the action already exports the loader-correct environment variable for the current platform (`OCL_ICD_VENDORS` on Linux and macOS, `OCL_ICD_FILENAMES` on Windows), and that is what a cross-platform consumer should rely on. `icd-vendors-path` exists for diagnostics (what did the action actually point the loader at?) and for cache keys, not for consumers to depend on directly.
+`icd-vendors-path` means three different things depending on the platform: a **file** on Linux (the single `.icd` under `/etc/OpenCL/vendors`), a **directory** on macOS (PoCL's vendors directory inside whichever prefix `pocl-source` selected), and a **vendor DLL path** on Windows (the value passed to `OCL_ICD_FILENAMES` and written to the registry). Each is correct for its own loader, but none of them is a portable value: a workflow that does, say, `export OCL_ICD_VENDORS=${{ steps.opencl.outputs.icd-vendors-path }}` to work identically across platforms will get three different semantics, and on Windows that variable is the wrong one entirely. Do not wire this output up yourself — the action already exports the loader-correct environment variable for the current platform (`OCL_ICD_VENDORS` on Linux and macOS, `OCL_ICD_FILENAMES` on Windows), and that is what a cross-platform consumer should rely on. `icd-vendors-path` exists for diagnostics (what did the action actually point the loader at?) and for cache keys, not for consumers to depend on directly.
 
 ## Examples
 
@@ -81,6 +82,14 @@ The action also exports `OPENCL_CPPFLAGS`, `OPENCL_LIBS`, `OpenCL_ROOT`, `OpenCL
     - uses: coatless-actions/setup-opencl@v1
       with:
         require-kernel: 'true'
+
+### Install a macOS PoCL that does not miscompile kernels
+
+Homebrew's PoCL is built against `llvm@21`, which miscompiles OpenCL kernels. This installs one built against LLVM 19 instead, and also silences the warning the action emits about the Homebrew one. It costs about 90 MB of downloads on a cold cache. See [PoCL on macOS](#pocl-on-macos) for why this is not yet the default.
+
+    - uses: coatless-actions/setup-opencl@v1
+      with:
+        pocl-source: conda-forge
 
 ### Branch on the device that was found
 
@@ -129,7 +138,7 @@ If the API does report a digest and it disagrees with yours, the job fails and i
 Requirements differ by platform:
 
 - **Linux** needs a C compiler (`cc`) and a Debian-family package manager (`apt-get`). The compiler builds a small probe program to check for a device — even when `runtime` is `none` and `verify` is `'false'` — and `apt-get` installs the headers, loader, and (unless `runtime` is `none`) PoCL.
-- **macOS** needs a C compiler (`cc`) for the same probe program, but no package manager: this action shells out to `brew` itself rather than assuming one is already configured. `apt-get` is a Linux-only package manager and plays no role here.
+- **macOS** needs a C compiler (`cc`) for the same probe program, but no package manager: this action shells out to `brew` itself rather than assuming one is already configured. `apt-get` is a Linux-only package manager and plays no role here. `pocl-source: conda-forge` needs no `brew` at all — it downloads micromamba and builds its own environment — but it does use `otool`, `install_name_tool`, and `codesign`, which arrive with the same Xcode Command Line Tools that provide `cc`. A missing one fails with an `::error::` naming it.
 - **Windows** needs neither in order to install or to report a device: it enumerates with `clinfo.exe` from the installed SDK, and `install-windows.ps1` never invokes a C compiler or a package manager. The `kernel` output alone needs a compiler, because no `clinfo` can run a kernel for you. GitHub's `windows-*` images ship mingw `gcc` on `PATH`, so this is satisfied out of the box; on a runner without `gcc`, `clang`, or `cc`, the action warns and reports `kernel=false` rather than failing — the other four probe outputs are unaffected.
 
 A C compiler and `apt-get` are preinstalled on every GitHub-hosted `ubuntu-*` runner image; a C compiler (the Xcode Command Line Tools) is preinstalled on every `macos-*` image. Neither is guaranteed inside a `container:` job, which is common for C++ and R projects and still runs on a GitHub-hosted runner — but Actions' `container:` jobs run on Linux hosts only, so this caveat applies to Linux images, never macOS (`xcode-select --install` has no `container:`-job scenario to remediate). Use a Debian-family container image (e.g. `ubuntu:24.04`) with a C compiler installed — `build-essential` — or install one yourself before this step. Missing either fails the job with an `::error::` and remediation, not a bare `command not found`.
@@ -139,11 +148,11 @@ A C compiler and `apt-get` are preinstalled on every GitHub-hosted `ubuntu-*` ru
 | Runner | Runtime | Support |
 |---|---|---|
 | `ubuntu-24.04`, `ubuntu-24.04-arm` | PoCL | Tested on every push and pull request |
-| `macos-latest` | PoCL | Tested on every push and pull request |
+| `macos-latest` | PoCL (Homebrew) | Tested on every push and pull request. `pocl-source: conda-forge` is tested nightly |
 | `windows-2025`, `windows-2022` | Intel CPU runtime | Tested on every push and pull request |
 | `ubuntu-26.04`, `ubuntu-26.04-arm` | PoCL | Tested nightly, best effort |
 | `ubuntu-22.04` | PoCL | Tested nightly, best effort. Reports OpenCL 1.2 (jammy ships PoCL 1.8 built against LLVM 11) |
-| `macos-15-intel` | PoCL | Tested nightly, best effort |
+| `macos-15-intel` | PoCL (Homebrew) | Tested nightly, best effort, both `pocl-source` values |
 | `ubuntu-latest`, `macos-latest`, `windows-latest` (floating labels) | whichever runtime `auto` resolves to on that image | Tested nightly, best effort. These labels move to a new underlying image without notice |
 | `windows-11-arm` | none available | Not supported. The action fails fast: no OpenCL CPU runtime exists for Windows on ARM64 |
 
@@ -151,7 +160,26 @@ A C compiler and `apt-get` are preinstalled on every GitHub-hosted `ubuntu-*` ru
 
 On Windows, `windows-2025` and `windows-2022` report `platform-version=OpenCL 3.0 WINDOWS` and `fp64=true`. `kernel` is a separate question there: Intel's `oclcpuexp` has shipped generations whose kernel compiler crashes on every build it is given while still enumerating that same healthy-looking device, so this action's own CI measures `kernel` on Windows nightly rather than asserting it on every pull request — a defect in a third-party runtime is not a defect in this action. If you hit it, `version` (with `version-sha256` where the older asset reports no digest) is how you pin a generation that works.
 
-On macOS, this action installs PoCL and the Khronos ICD loader by default rather than using Apple's `OpenCL.framework`. Homebrew's `opencl-icd-loader` and `opencl-headers` formulae are keg-only and shadowed by macOS, so code that hardcodes `-framework OpenCL` or a bare `-lOpenCL` silently keeps using Apple's framework and never sees PoCL. Use the exported `OPENCL_CPPFLAGS` and `OPENCL_LIBS` instead of hardcoding link flags.
+## PoCL on macOS
+
+This action installs PoCL and the Khronos ICD loader on macOS rather than using Apple's `OpenCL.framework`. Homebrew's `opencl-icd-loader` and `opencl-headers` formulae are keg-only and shadowed by macOS, so code that hardcodes `-framework OpenCL` or a bare `-lOpenCL` silently keeps using Apple's framework and never sees PoCL. Use the exported `OPENCL_CPPFLAGS` and `OPENCL_LIBS` instead of hardcoding link flags.
+
+There are two PoCLs to choose between, and the difference is which LLVM each is built against:
+
+| `pocl-source` | PoCL | LLVM | Notes |
+|---|---|---|---|
+| `homebrew` | Homebrew's `pocl` formula | `llvm@21` (21.1.8) | What `auto` resolves to today. Warned about on every run. |
+| `conda-forge` | conda-forge `pocl=7.1`, installed with micromamba into `$RUNNER_TEMP` | LLVM 19.1.7 | Not yet the default; see below. |
+
+LLVM 21's Clang miscompiles the kernel stubs it generates for OpenCL — [llvm#161077](https://github.com/llvm/llvm-project/issues/161077), fixed in LLVM 22 and never backported to the 21.1.x line. The result is a runtime that enumerates a healthy, double-precision-capable CPU device and then dies inside real kernels. Measured on Apple silicon against a GPU linear-algebra package's suite: three separate operations exited 139 on Homebrew's PoCL and passed on conda-forge's, with nothing changed between the two runs but `OCL_ICD_VENDORS`. This is not a novel diagnosis — PoCL's own README marks its CUDA backend broken on LLVM 21, and Arch pins `pocl` to `clang20`.
+
+So the action emits a `::warning::` naming the defect whenever it installs Homebrew's PoCL, including when that is what `auto` chose, and both install paths log the LLVM version the installed PoCL actually links so the claim can be checked against the run rather than taken on faith.
+
+`auto` still means `homebrew` because **the conda-forge path has never run on a hosted macOS runner**. It was measured on developer hardware with a full Xcode and twelve cores; hosted runners have neither. It runs nightly in this action's own preview matrix, on `macos-latest` and `macos-15-intel`, with `require-kernel: 'true'` so a device that enumerates but cannot execute anything fails that leg. Once those are consistently green, `auto` will change to mean `conda-forge` — a behaviour change that will not arrive in a patch release.
+
+The conda-forge environment is self-contained: headers, the Khronos ICD loader, PoCL, and its `.icd` all live under one prefix in `$RUNNER_TEMP`, nothing is installed system-wide, and `pocl=7.1` is pinned rather than floated, because the LLVM generation is a transitive dependency that a floating version would eventually move. It costs about 90 MB of downloads on a cold cache and is cached under `cache: 'true'` like the Windows runtime.
+
+`opencl-library` points at the environment's own `libOpenCL.dylib` in either case, and its install name is absolute in either case — Homebrew's keg already is, and the conda-forge one is rewritten to be, because conda ships `@rpath` install names and nothing downstream of this action carries an rpath. That matters for anything that links the loader by absolute path, such as the companion `setup-clblast` action building CLBlast from source.
 
 ## Versioning
 

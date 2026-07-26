@@ -12,10 +12,24 @@
 # Homebrew prefix. Anything compiled with -framework OpenCL or a bare
 # -lOpenCL silently keeps using Apple's framework and never sees PoCL. Every
 # path emitted below is therefore fully qualified.
+#
+# Homebrew is not the only PoCL available on macOS: install-macos-conda.sh
+# installs one from conda-forge instead, because Homebrew's is built against
+# llvm@21 and LLVM 21's Clang miscompiles OpenCL kernel stubs (llvm#161077).
+# That script's header explains the whole story; this one keeps the Homebrew
+# path and hands off when asked.
 
 set -euo pipefail
 
 runtime="${SE_RUNTIME:-pocl}"
+
+# action.yml resolves 'pocl-source' and only ever passes a non-empty value for
+# runtime 'pocl' on macOS; every other combination arrives empty, as does a
+# bare local run of this script, and takes the Homebrew path below. Only the
+# one value diverts -- anything else, including a typo that got past
+# action.yml's validation on a standalone run, falls through to Homebrew,
+# which is the safe answer rather than a hard stop.
+pocl_source="${SE_POCL_SOURCE:-}"
 
 emit() { printf '%s=%s\n' "$1" "$2"; }
 
@@ -51,6 +65,19 @@ if [ "${runtime}" = "apple" ]; then
     emit runtime-name       "apple"
     emit sdkroot            "${sdk_path}"
     exit 0
+fi
+
+# Handed off rather than branched inline: the conda-forge path carries its own
+# pinned versions, digest verification, cache stamp and dylib relocation, and
+# it needs its own stdout discipline (micromamba's transaction table must not
+# reach the key=value contract). Keeping it in one file also keeps it
+# runnable on its own, the way install-windows.ps1 is.
+#
+# Only runtime 'pocl' reaches here with a source to choose: 'apple' returned
+# above, and 'none' installs no runtime at all, so it stays on Homebrew's
+# headers and loader whatever this input says.
+if [ "${runtime}" = "pocl" ] && [ "${pocl_source}" = "conda-forge" ]; then
+    exec bash "$(dirname "${BASH_SOURCE[0]}")/install-macos-conda.sh"
 fi
 
 formulae="opencl-headers opencl-icd-loader"
@@ -90,8 +117,29 @@ if [ "${runtime}" = "none" ]; then
     emit icd-vendors-path ""
     emit runtime-name     "none"
 else
+    pocl_prefix="$(brew --prefix pocl)"
+
+    # Which LLVM PoCL links is the difference between a runtime that runs
+    # kernels and one that segfaults inside them (llvm#161077), and it is a
+    # transitive choice no pin in this action controls. action.yml warns about
+    # llvm@21 unconditionally on this path; this line is the evidence for that
+    # warning, and the thing that will show when it has gone stale. Written to
+    # stderr so it reaches the job log immediately -- action.yml only replays
+    # this script's stdout after the capture succeeds. Same measurement, for
+    # the same reason, as install-macos-conda.sh's.
+    llvm_line="$(otool -L "${pocl_prefix}/lib/libpocl.dylib" 2>/dev/null | grep -i 'libLLVM' | head -1 | sed 's/^[[:space:]]*//' || true)"
+    echo "Homebrew PoCL links: ${llvm_line:-(otool reported no libLLVM dependency)}" >&2
+
+    # Homebrew's libLLVM.dylib is unversioned, so the generation has to come
+    # from the keg name in the path. install-macos-conda.sh parses the SONAME
+    # instead, because conda-forge's carries the version in the file name.
+    llvm_major="$(printf '%s' "${llvm_line}" | sed -n 's/.*llvm@\([0-9][0-9]*\).*/\1/p')"
+    if [ -n "${llvm_major}" ] && [ "${llvm_major}" != "21" ]; then
+        echo "Note: Homebrew's PoCL is now on llvm@${llvm_major}, not llvm@21. The warning action.yml emits for 'pocl-source: homebrew' names llvm@21 specifically and should be re-checked against llvm#161077 before the next release." >&2
+    fi
+
     # PoCL installs its .icd under its own prefix, not /etc/OpenCL/vendors,
     # so exporting OCL_ICD_VENDORS is mandatory rather than optional.
-    emit icd-vendors-path "$(brew --prefix pocl)/etc/OpenCL/vendors"
+    emit icd-vendors-path "${pocl_prefix}/etc/OpenCL/vendors"
     emit runtime-name     "pocl"
 fi
