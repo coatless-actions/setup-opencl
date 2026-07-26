@@ -182,8 +182,10 @@ else
 
     # Unlike Apple's framework, whose headers sit directly under Headers/ with
     # no CL subdirectory, conda-forge's opencl-headers already installs
-    # include/CL/cl.h (plus an include/OpenCL -> CL symlink). No shim
-    # directory is built here, and none is needed. The prefix also holds both
+    # include/CL/cl.h (plus an include/OpenCL -> CL symlink). That layout is
+    # correct but cannot be handed out as-is -- see the shim block further
+    # down for why the prefix's own include/ and lib/ are re-exported through
+    # directories holding nothing else. The prefix also holds both
     # halves -- headers and loader -- so it can be handed out as opencl-root
     # directly, where the Homebrew path has to merge two keg-only prefixes
     # into a symlinked root first.
@@ -317,9 +319,10 @@ fi
 # no rpath anywhere downstream to satisfy it. library.dynam() then fails with
 # "no LC_RPATH's found" and the package never loads. That is invisible to
 # probe.c, which is C and links no C++ runtime, so nothing in this action's own
-# tests would have caught it. include/ has the same problem in the milder
-# direction: it carries zlib.h, jpeglib.h, hwloc.h and zstd.h, which would sit
-# ahead of the SDK's.
+# tests would have caught it -- tests/macos-emission-contract.sh now does, by
+# linking a C++ program against the emitted flags and reading its load commands
+# with otool. include/ has the same problem in the milder direction: it carries
+# zlib.h, jpeglib.h, hwloc.h and zstd.h, which would sit ahead of the SDK's.
 #
 # The Homebrew branch needs none of this because its keg genuinely does contain
 # only libOpenCL.
@@ -333,11 +336,15 @@ for lib in "${env_dir}"/lib/libOpenCL*.dylib; do
 done
 # Both spellings, and both are load-bearing. conda's include/ carries an
 # OpenCL -> CL symlink because macOS consumers write <OpenCL/cl.h> while
-# everyone else writes <CL/cl.h>, and CLBlast is one of the former. A shim
-# offering only CL/ does not fail to find a header -- it silently falls
-# through to Apple's framework inside the SDK, so the build then mixes
-# Khronos' cl.h with Apple's cl_gl.h and dies on an undefined
-# CL_EXT_SUFFIX__VERSION_1_0. That is how this was found.
+# everyone else writes <CL/cl.h>, and CLBlast is one of the former (its public
+# headers include <OpenCL/opencl.h> under __APPLE__). A shim offering only CL/
+# does not fail to find a header -- it silently falls through to Apple's
+# framework inside the SDK, so the build then mixes Khronos' cl.h with Apple's
+# cl_gl.h and dies on an undefined CL_EXT_SUFFIX__VERSION_1_0. That is how this
+# was found, downstream, rather than here. Directory symlinks rather than
+# per-file ones so every header answers to both spellings, not just the two
+# anyone happened to think of; tests/macos-emission-contract.sh asserts where
+# each one actually resolves from.
 ln -sfn "${env_dir}/include/CL" "${inc_shim}/CL"
 ln -sfn "${env_dir}/include/CL" "${inc_shim}/OpenCL"
 

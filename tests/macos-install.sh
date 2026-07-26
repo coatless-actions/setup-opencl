@@ -7,11 +7,19 @@
 #
 # Usage: tests/macos-install.sh [runtime] [pocl-source] [expectation]
 #   runtime     defaults to pocl; the other documented values are apple, none
-#   pocl-source defaults to empty (the Homebrew path, which is what
-#               'pocl-source: auto' resolves to today); the other value is
-#               conda-forge
+#   pocl-source defaults to empty, which is what a bare local run of the
+#               install script sees and takes the Homebrew path. Note this is
+#               NOT what the action's 'pocl-source: auto' resolves to any more
+#               -- that is conda-forge -- so pass 'conda-forge' to exercise
+#               what an unconfigured caller now gets
 #   expectation passed to tests/probe-contract.sh; defaults to >=1 for a
 #               runtime that installs a device and =0 for 'none'
+#
+# For runtime 'pocl' this also runs tests/macos-emission-contract.sh against
+# the values this run emitted, so the header-spelling and C++ linkage
+# contracts are checked here too. That file is where they live because they
+# have to hold for BOTH pocl sources, which is one run of this script each;
+# run it with no arguments to cover both in one command.
 #
 # Note: there is no container to isolate this. The Homebrew path installs
 # formulae onto the machine it runs on, exactly as it would on a runner. The
@@ -84,6 +92,12 @@ if [ "${runtime}" = "pocl" ]; then
     [ -d "${vendors}" ] || fail "icd-vendors-path '${vendors}' is not a directory"
     ls "${vendors}"/*.icd >/dev/null 2>&1 \
         || fail "icd-vendors-path '${vendors}' contains no .icd file"
+
+    # Fed the emission this run already captured rather than letting the
+    # contract script install a second time. An empty pocl-source took the
+    # Homebrew path above, so that is what it is labelled.
+    tests/macos-emission-contract.sh --emitted \
+        <(printf '%s\n' "${out}") "${pocl_source:-homebrew}"
 fi
 
 OPENCL_CPPFLAGS="$(value opencl-cppflags)"

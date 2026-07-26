@@ -16,6 +16,18 @@ precise about that:
   against a SHA-256 digest fixed in this action's source and refreshed by
   its own update automation. This is the strongest guarantee -- a true pin,
   independent of the download itself.
+- **conda-forge PoCL on macOS** (the default there since v1.3.0): the
+  micromamba binary itself IS pinned -- a SHA-256 fixed in this action's
+  source, checked before it is ever executed. The packages it then installs
+  are NOT individually pinned here. `pocl` is constrained to an exact minor
+  version, but the solve runs live against conda-forge and there is no
+  lockfile and no per-package digest in this repository, so integrity for
+  those rests on conda-forge's repodata over TLS -- a transport check, the
+  same tier as the `version:` case below rather than the pinned-default one
+  above. Roughly 90 MB is downloaded and about 413 MB lands in the caller's
+  Actions cache. `pocl-source: homebrew` avoids all of it and takes
+  Homebrew's trust model instead, at the cost of a PoCL built against an
+  LLVM that miscompiles OpenCL kernels.
 - **Cache hit**: nothing is downloaded and nothing is re-hashed. Integrity
   instead comes from the cache key's binding to the installer script's
   hash and the resolved version, not from a digest check.

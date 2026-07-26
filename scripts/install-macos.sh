@@ -27,8 +27,18 @@ runtime="${SE_RUNTIME:-pocl}"
 # runtime 'pocl' on macOS; every other combination arrives empty, as does a
 # bare local run of this script, and takes the Homebrew path below. Only the
 # one value diverts -- anything else, including a typo that got past
-# action.yml's validation on a standalone run, falls through to Homebrew,
-# which is the safe answer rather than a hard stop.
+# action.yml's validation on a standalone run, falls through to Homebrew
+# rather than stopping.
+#
+# Homebrew is NOT what the action's own 'pocl-source: auto' resolves to any
+# more: that is conda-forge. This fallback is still reached from the action
+# itself, though -- resolved-pocl-source is empty for every macOS runtime that
+# installs no PoCL ('none' and 'apple'), and those take the branch below for
+# their headers and loader. What it is NOT reached by is a conda-forge-eligible
+# runtime, which always arrives with a resolved value. It stays on Homebrew
+# because a standalone run should not download and
+# build a 90 MB environment nobody asked for; pass SE_POCL_SOURCE=conda-forge
+# to get what the action installs by default.
 pocl_source="${SE_POCL_SOURCE:-}"
 
 emit() { printf '%s=%s\n' "$1" "$2"; }

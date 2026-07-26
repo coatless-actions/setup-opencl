@@ -12,7 +12,7 @@ inputs:
     required: false
     default: 'auto'
   pocl-source:
-    description: 'Where PoCL comes from on macOS: homebrew, conda-forge, or auto. Only honored for runtime "pocl" on macOS; ignored with a warning elsewhere. "auto" currently resolves to "homebrew", whose PoCL is built against llvm@21 and miscompiles OpenCL kernels (llvm#161077) -- "conda-forge" installs one built against LLVM 19 instead'
+    description: 'Where PoCL comes from on macOS: homebrew, conda-forge, or auto. Only honored for runtime "pocl" on macOS; ignored with a warning elsewhere. "auto" resolves to "conda-forge", which installs a PoCL built against LLVM 19 that can actually run kernels; it downloads ~90 MB and builds an environment, cached afterwards, so a cold run costs more than a brew install. "homebrew" remains selectable and is faster on a cold cache, but its PoCL is built against llvm@21, whose Clang miscompiles OpenCL kernels (llvm#161077)'
     required: false
     default: 'auto'
   version:
@@ -216,29 +216,42 @@ runs:
         if [ "${SE_OS}" = "macOS" ] && [ "${resolved}" = "pocl" ]; then
           pocl_source="${SE_POCL_SOURCE}"
 
-          # PROVISIONAL, and deliberately so. 'auto' resolves to 'homebrew'
-          # purely to leave the behaviour of every existing v1 consumer
-          # unchanged by this input's arrival. conda-forge is the path known
-          # to produce a PoCL that can actually run kernels on Apple silicon,
-          # and it is expected to become what 'auto' means -- but that was
-          # measured on developer hardware with a full Xcode and twelve
-          # cores, and it has never run on a hosted macOS runner, which has
-          # neither. It becomes the default once this action's own nightly
-          # macOS legs have proven it there, not before.
+          # 'auto' means conda-forge. Homebrew's PoCL is built against
+          # llvm@21, whose Clang miscompiles the kernel stubs it generates for
+          # OpenCL (llvm#161077) -- it is the known-broken option, and a
+          # caller who expressed no preference should not be handed it.
+          #
+          # This resolution was provisional while conda-forge's path had only
+          # ever been measured on developer hardware with a full Xcode and
+          # twelve cores. It no longer is. Measured since: green on hosted
+          # macos-latest (arm64) and macos-15-intel with 'require-kernel:
+          # true', which asserts a kernel builds, launches and returns the
+          # right numbers rather than merely that a device enumerates; and on
+          # an R package's own suite, where it took macOS from six of ten test
+          # scripts segfaulting to none.
+          #
+          # The cost is real and is not hidden: the conda environment is about
+          # 90 MB of downloads plus a solve on a cold cache, where a brew
+          # install is neither, so a first run on a cold cache is slower than
+          # the path this replaces. It is cached afterwards. A caller who does
+          # not compile kernels and wants the faster path sets
+          # 'pocl-source: homebrew' and still gets exactly what 'auto' used to
+          # give them, warning included.
           if [ "${pocl_source}" = "auto" ]; then
-            pocl_source="homebrew"
+            pocl_source="conda-forge"
           fi
         elif [ "${SE_POCL_SOURCE}" != "auto" ]; then
           echo "::warning::The 'pocl-source' input is only honored for runtime 'pocl' on macOS; ignoring it on ${SE_OS} for runtime '${resolved}'"
         fi
 
-        # Fires even though homebrew is what 'auto' currently resolves to.
-        # Shipping a known-broken dependency quietly is the thing this action
-        # exists not to do -- the same reasoning as the unconditional warning
-        # the probe steps emit for a device that enumerates but cannot run a
-        # kernel, which is exactly the failure this one predicts.
+        # Reached only through an explicit 'pocl-source: homebrew' now that
+        # 'auto' means conda-forge, and still unconditional. Shipping a
+        # known-broken dependency quietly is the thing this action exists not
+        # to do -- the same reasoning as the unconditional warning the probe
+        # steps emit for a device that enumerates but cannot run a kernel,
+        # which is exactly the failure this one predicts.
         if [ "${pocl_source}" = "homebrew" ]; then
-          echo "::warning::Homebrew's PoCL is built against llvm@21, whose Clang miscompiles the kernel stubs it generates for OpenCL (llvm#161077 -- fixed in LLVM 22, never backported to 21.1.8). Kernels can segfault at runtime on a device that enumerates as perfectly healthy. Set 'pocl-source: conda-forge' to install a PoCL built against LLVM 19 instead. The install step logs the LLVM version actually linked."
+          echo "::warning::Homebrew's PoCL is built against llvm@21, whose Clang miscompiles the kernel stubs it generates for OpenCL (llvm#161077 -- fixed in LLVM 22, never backported to 21.1.8). Kernels can segfault at runtime on a device that enumerates as perfectly healthy. Drop 'pocl-source: homebrew' to get the conda-forge PoCL built against LLVM 19, which is what 'auto' now installs. The install step logs the LLVM version actually linked."
         fi
 
         echo "resolved-runtime=${resolved}" >> "$GITHUB_OUTPUT"

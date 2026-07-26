@@ -30,7 +30,7 @@ Enumerating a device is not the same as being able to use one, so the action als
 | Input | Description | Default |
 |---|---|---|
 | `runtime` | OpenCL runtime to install: `pocl`, `intel`, `apple`, `none`, or `auto`. `auto` resolves to `pocl` on Linux and macOS and `intel` on Windows. | `auto` |
-| `pocl-source` | Where PoCL comes from on macOS: `homebrew`, `conda-forge`, or `auto`. Only honored for `runtime: pocl` on macOS; ignored, with a warning, for every other platform and runtime. `auto` currently resolves to `homebrew`, whose PoCL miscompiles OpenCL kernels — see [PoCL on macOS](#pocl-on-macos). | `auto` |
+| `pocl-source` | Where PoCL comes from on macOS: `homebrew`, `conda-forge`, or `auto`. Only honored for `runtime: pocl` on macOS; ignored, with a warning, for every other platform and runtime. `auto` resolves to `conda-forge`, which costs about 90 MB of downloads on a cold cache; `homebrew` is faster but its PoCL miscompiles OpenCL kernels — see [PoCL on macOS](#pocl-on-macos). | `auto` |
 | `version` | Pin the runtime version. Only honored for `runtime: intel` on Windows, where it takes an `intel/llvm` release tag (e.g. `2026-WW22`). Ignored, with a warning, for every other runtime. Verified against the digest the GitHub API reports for that release at resolution time, not a pinned one, and the job fails if the API reports none and `version-sha256` supplies none either. | `''` |
 | `version-sha256` | Expected SHA-256 (64 hex characters, no `sha256:` prefix) of the asset `version` selects. Needed only for a release whose asset predates the digest GitHub now reports. Must agree with the API's digest when both exist. Ignored, with a warning, when `version` is unset. | `''` |
 | `verify` | Fail the job when no OpenCL device is found (`'true'` or `'false'`). Never fatal when `runtime` is `none`. | `true` |
@@ -83,13 +83,13 @@ The action also exports `OPENCL_CPPFLAGS`, `OPENCL_LIBS`, `OpenCL_ROOT`, `OpenCL
       with:
         require-kernel: 'true'
 
-### Install a macOS PoCL that does not miscompile kernels
+### Trade a working kernel compiler for a faster macOS install
 
-Homebrew's PoCL is built against `llvm@21`, which miscompiles OpenCL kernels. This installs one built against LLVM 19 instead, and also silences the warning the action emits about the Homebrew one. It costs about 90 MB of downloads on a cold cache. See [PoCL on macOS](#pocl-on-macos) for why this is not yet the default.
+On macOS the action installs conda-forge's PoCL by default, because Homebrew's is built against `llvm@21` and miscompiles OpenCL kernels. That costs about 90 MB of downloads and an environment build the first time, cached afterwards. If your job never compiles a kernel — it only needs headers, a loader and a device that enumerates — Homebrew's is faster on a cold cache and still available. The action warns on every run that you have chosen it. See [PoCL on macOS](#pocl-on-macos).
 
     - uses: coatless-actions/setup-opencl@v1
       with:
-        pocl-source: conda-forge
+        pocl-source: homebrew
 
 ### Branch on the device that was found
 
@@ -138,7 +138,7 @@ If the API does report a digest and it disagrees with yours, the job fails and i
 Requirements differ by platform:
 
 - **Linux** needs a C compiler (`cc`) and a Debian-family package manager (`apt-get`). The compiler builds a small probe program to check for a device — even when `runtime` is `none` and `verify` is `'false'` — and `apt-get` installs the headers, loader, and (unless `runtime` is `none`) PoCL.
-- **macOS** needs a C compiler (`cc`) for the same probe program, but no package manager: this action shells out to `brew` itself rather than assuming one is already configured. `apt-get` is a Linux-only package manager and plays no role here. `pocl-source: conda-forge` needs no `brew` at all — it downloads micromamba and builds its own environment — but it does use `otool`, `install_name_tool`, and `codesign`, which arrive with the same Xcode Command Line Tools that provide `cc`. A missing one fails with an `::error::` naming it.
+- **macOS** needs a C compiler (`cc`) for the same probe program, but no package manager: this action shells out to `brew` itself rather than assuming one is already configured. `apt-get` is a Linux-only package manager and plays no role here. `pocl-source: conda-forge`, which is what `auto` resolves to, needs no `brew` at all — it downloads micromamba and builds its own environment — but it does use `otool`, `install_name_tool`, and `codesign`, which arrive with the same Xcode Command Line Tools that provide `cc`. A missing one fails with an `::error::` naming it.
 - **Windows** needs neither in order to install or to report a device: it enumerates with `clinfo.exe` from the installed SDK, and `install-windows.ps1` never invokes a C compiler or a package manager. The `kernel` output alone needs a compiler, because no `clinfo` can run a kernel for you. GitHub's `windows-*` images ship mingw `gcc` on `PATH`, so this is satisfied out of the box; on a runner without `gcc`, `clang`, or `cc`, the action warns and reports `kernel=false` rather than failing — the other four probe outputs are unaffected.
 
 A C compiler and `apt-get` are preinstalled on every GitHub-hosted `ubuntu-*` runner image; a C compiler (the Xcode Command Line Tools) is preinstalled on every `macos-*` image. Neither is guaranteed inside a `container:` job, which is common for C++ and R projects and still runs on a GitHub-hosted runner — but Actions' `container:` jobs run on Linux hosts only, so this caveat applies to Linux images, never macOS (`xcode-select --install` has no `container:`-job scenario to remediate). Use a Debian-family container image (e.g. `ubuntu:24.04`) with a C compiler installed — `build-essential` — or install one yourself before this step. Missing either fails the job with an `::error::` and remediation, not a bare `command not found`.
@@ -148,11 +148,11 @@ A C compiler and `apt-get` are preinstalled on every GitHub-hosted `ubuntu-*` ru
 | Runner | Runtime | Support |
 |---|---|---|
 | `ubuntu-24.04`, `ubuntu-24.04-arm` | PoCL | Tested on every push and pull request |
-| `macos-latest` | PoCL (Homebrew) | Tested on every push and pull request. `pocl-source: conda-forge` is tested nightly |
+| `macos-latest` | PoCL (conda-forge) | Tested on every push and pull request. `pocl-source: homebrew` is tested nightly |
 | `windows-2025`, `windows-2022` | Intel CPU runtime | Tested on every push and pull request |
 | `ubuntu-26.04`, `ubuntu-26.04-arm` | PoCL | Tested nightly, best effort |
 | `ubuntu-22.04` | PoCL | Tested nightly, best effort. Reports OpenCL 1.2 (jammy ships PoCL 1.8 built against LLVM 11) |
-| `macos-15-intel` | PoCL (Homebrew) | Tested nightly, best effort, both `pocl-source` values |
+| `macos-15-intel` | PoCL (conda-forge) | Tested nightly, best effort, both `pocl-source` values |
 | `ubuntu-latest`, `macos-latest`, `windows-latest` (floating labels) | whichever runtime `auto` resolves to on that image | Tested nightly, best effort. These labels move to a new underlying image without notice |
 | `windows-11-arm` | none available | Not supported. The action fails fast: no OpenCL CPU runtime exists for Windows on ARM64 |
 
@@ -168,16 +168,18 @@ There are two PoCLs to choose between, and the difference is which LLVM each is 
 
 | `pocl-source` | PoCL | LLVM | Notes |
 |---|---|---|---|
-| `homebrew` | Homebrew's `pocl` formula | `llvm@21` (21.1.8) | What `auto` resolves to today. Warned about on every run. |
-| `conda-forge` | conda-forge `pocl=7.1`, installed with micromamba into `$RUNNER_TEMP` | LLVM 19.1.7 | Not yet the default; see below. |
+| `conda-forge` | conda-forge `pocl=7.1`, installed with micromamba into `$RUNNER_TEMP` | LLVM 19.1.7 | What `auto` resolves to. About 90 MB of downloads on a cold cache. |
+| `homebrew` | Homebrew's `pocl` formula | `llvm@21` (21.1.8) | Faster on a cold cache. Warned about on every run. |
 
 LLVM 21's Clang miscompiles the kernel stubs it generates for OpenCL — [llvm#161077](https://github.com/llvm/llvm-project/issues/161077), fixed in LLVM 22 and never backported to the 21.1.x line. The result is a runtime that enumerates a healthy, double-precision-capable CPU device and then dies inside real kernels. Measured on Apple silicon against a GPU linear-algebra package's suite: three separate operations exited 139 on Homebrew's PoCL and passed on conda-forge's, with nothing changed between the two runs but `OCL_ICD_VENDORS`. This is not a novel diagnosis — PoCL's own README marks its CUDA backend broken on LLVM 21, and Arch pins `pocl` to `clang20`.
 
-So the action emits a `::warning::` naming the defect whenever it installs Homebrew's PoCL, including when that is what `auto` chose, and both install paths log the LLVM version the installed PoCL actually links so the claim can be checked against the run rather than taken on faith.
+So the action emits a `::warning::` naming the defect whenever it installs Homebrew's PoCL, and both install paths log the LLVM version the installed PoCL actually links so the claim can be checked against the run rather than taken on faith.
 
-`auto` still means `homebrew` because **the conda-forge path has never run on a hosted macOS runner**. It was measured on developer hardware with a full Xcode and twelve cores; hosted runners have neither. It runs nightly in this action's own preview matrix, on `macos-latest` and `macos-15-intel`, with `require-kernel: 'true'` so a device that enumerates but cannot execute anything fails that leg. Once those are consistently green, `auto` will change to mean `conda-forge` — a behaviour change that will not arrive in a patch release.
+**`auto` resolving to `conda-forge` is a behaviour change for existing `@v1` consumers.** `homebrew` was the default only so that this input's arrival changed nothing for anybody, and it is the option known to be broken. What changed is the evidence, not the diagnosis: the conda-forge path had until now only ever run on developer hardware with a full Xcode and twelve cores. It has since gone green on hosted `macos-latest` (arm64) and `macos-15-intel` with `require-kernel: 'true'` — which asserts a kernel builds, launches and returns the right numbers, not merely that a device enumerates — and on a real R package's test suite, where it took macOS from six of ten test scripts segfaulting to none.
 
-The conda-forge environment is self-contained: headers, the Khronos ICD loader, PoCL, and its `.icd` all live under one prefix in `$RUNNER_TEMP`, nothing is installed system-wide, and `pocl=7.1` is pinned rather than floated, because the LLVM generation is a transitive dependency that a floating version would eventually move. It costs about 90 MB of downloads on a cold cache and is cached under `cache: 'true'` like the Windows runtime.
+It is not free. The conda-forge environment is about 90 MB of downloads plus a solve, where `brew install pocl` is neither, so the **first** run of a job with no cache entry is slower than it used to be. Later runs restore it under `cache: 'true'`, like the Windows runtime — but note what that stores: the restored environment is roughly **413 MB** in your repository's Actions cache, against a 10 GB quota with least-recently-used eviction, so on a cache-heavy repository it can push other entries out. A further ~500 MB of micromamba package cache lands in `RUNNER_TEMP`, outside the cached path, and is discarded with the runner. A job that never compiles an OpenCL kernel — one that needs headers, a loader and a device that enumerates — can set `pocl-source: homebrew` and get exactly the old behaviour back, warning included.
+
+The conda-forge environment is self-contained: headers, the Khronos ICD loader, PoCL, and its `.icd` all live under one prefix in `$RUNNER_TEMP`, nothing is installed system-wide, and `pocl=7.1` is pinned rather than floated, because the LLVM generation is a transitive dependency that a floating version would eventually move.
 
 `opencl-library` points at the environment's own `libOpenCL.dylib` in either case, and its install name is absolute in either case — Homebrew's keg already is, and the conda-forge one is rewritten to be, because conda ships `@rpath` install names and nothing downstream of this action carries an rpath. That matters for anything that links the loader by absolute path, such as the companion `setup-clblast` action building CLBlast from source.
 

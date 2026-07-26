@@ -39,6 +39,12 @@ jobs:
           # absent -- device-count is unsigned, so it would assert nothing.
           - { os: ubuntu-24.04,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           - { os: ubuntu-24.04-arm,  runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
+          # This is the leg that exercises what an unconfigured macOS caller
+          # actually gets, and since 'pocl-source: auto' now resolves to
+          # conda-forge, that is a micromamba environment rather than a brew
+          # install -- roughly 90 MB on a cold cache, restored from the
+          # conda-forge cache entry afterwards. Left at 'auto' on purpose: a
+          # named source here would stop it tracking the default.
           - { os: macos-latest,      runtime: auto, verify: 'true',  require-fp64: 'false', expect: '>=1' }
           # Headers and loader only. A device appearing here is a real failure:
           # it means the runtime was installed when it should not have been.
@@ -61,6 +67,11 @@ jobs:
           # default 'verify: true' would otherwise fail the job on the
           # expected zero-device count.
           - { os: macos-latest,      runtime: apple, verify: 'false', require-fp64: 'false', expect: '=0' }
+          # Homebrew is still a supported choice, so a pull request must not be
+          # able to break that branch of install-macos.sh with nothing turning
+          # red. Cheap enough for Tier 1: it is the fast path, which is the
+          # whole reason the option still exists.
+          - { os: macos-latest,      runtime: pocl,  verify: 'true',  require-fp64: 'false', pocl-source: 'homebrew', expect: '>=1' }
           # require-fp64 has no coverage otherwise: no leg above sets it, so
           # this public input has never executed in either direction.
           # ubuntu-24.04's PoCL reports fp64=true, so this leg proves the
@@ -201,6 +212,37 @@ jobs:
           cc -o consumer consumer.c ${OPENCL_CPPFLAGS} ${OPENCL_LIBS}
           ./consumer
 
+      # The consumer above is C and includes <CL/cl.h>, which is exactly the
+      # shape of program that cannot see either seam failure this action has
+      # already shipped: an include directory answering only one of the two
+      # header spellings falls through to Apple's framework and still
+      # compiles, and a '-L' into a prefix that also holds libc++ only shows
+      # up once something links C++. Both were found by a downstream package
+      # breaking rather than by anything here. This runs the assertions that
+      # would have caught them, against the values this run actually emitted.
+      - name: Assert the macOS emission contract
+        if: runner.os == 'macOS' && steps.setup.outputs.runtime-name == 'pocl'
+        shell: bash
+        env:
+          SE_ROOT: ${{ steps.setup.outputs.opencl-root }}
+          SE_INCLUDE_DIR: ${{ steps.setup.outputs.opencl-include-dir }}
+          SE_LIBRARY: ${{ steps.setup.outputs.opencl-library }}
+          SE_LABEL: ${{ matrix.pocl-source || 'auto' }}
+        run: |
+          set -euo pipefail
+          # cppflags and libs reach a caller through the job environment, not
+          # as step outputs, so the block is reassembled from both channels --
+          # which is also the only way to assert what a consumer really sees.
+          printf '%s\n' \
+            "opencl-root=${SE_ROOT}" \
+            "opencl-include-dir=${SE_INCLUDE_DIR}" \
+            "opencl-library=${SE_LIBRARY}" \
+            "opencl-cppflags=${OPENCL_CPPFLAGS}" \
+            "opencl-libs=${OPENCL_LIBS}" \
+            > "${RUNNER_TEMP}/emission.txt"
+          tests/macos-emission-contract.sh --emitted \
+            "${RUNNER_TEMP}/emission.txt" "${SE_LABEL}"
+
   # Tier 2: public-preview and deprecated runner labels, plus the floating
   # *-latest labels. These have no SLA and change without notice, so they run
   # on the schedule only and are never allowed to fail a pull request. The
@@ -223,21 +265,30 @@ jobs:
           - { os: ubuntu-latest,     runtime: auto, expect: '>=1' }
           - { os: macos-latest,      runtime: auto, expect: '>=1' }
           - { os: windows-latest,    runtime: auto, expect: '>=1' }
-          # The two legs that have to go green before 'pocl-source: auto' can
-          # start meaning conda-forge on macOS. Homebrew's PoCL is built
-          # against llvm@21, whose Clang miscompiles OpenCL kernel stubs
-          # (llvm#161077), and conda-forge's is built against LLVM 19 --
-          # measured, but only on developer hardware with a full Xcode and
-          # twelve cores. Whether that survives a hosted runner, which has
-          # neither, is the open question, and these are what answer it.
+          # These two are what 'pocl-source: auto' resolving to conda-forge on
+          # macOS rests on, and they keep it standing. Homebrew's PoCL is
+          # built against llvm@21, whose Clang miscompiles OpenCL kernel stubs
+          # (llvm#161077); conda-forge's is built against LLVM 19.
           # 'require-kernel' is the whole point: enumerating a device proves
-          # nothing about the defect being routed around here, so this asserts
-          # a kernel actually builds, runs and returns the right numbers.
+          # nothing about that defect, so these assert a kernel actually
+          # builds, runs and returns the right numbers. 'pocl-source' is named
+          # explicitly rather than left to 'auto' so the legs keep testing
+          # this source by name if the default ever moves again.
           # macos-15-intel is not redundant with macos-latest -- it is the
           # only leg that exercises the osx-64 micromamba binary and its
           # pinned digest, which nothing else would ever download.
           - { os: macos-latest,      runtime: auto, pocl-source: conda-forge, require-kernel: 'true', expect: '>=1' }
           - { os: macos-15-intel,    runtime: auto, pocl-source: conda-forge, require-kernel: 'true', expect: '>=1' }
+          # Homebrew's PoCL is still a supported value of 'pocl-source', and
+          # the flip above took away the Tier-1 coverage it used to get for
+          # free as what 'auto' meant. These two put it back, nightly: the
+          # brew branch of install-macos.sh is this action's own code and a
+          # pull request could break it with nothing turning red. Deliberately
+          # without 'require-kernel' -- llvm#161077 is the reason this is no
+          # longer the default, and a third-party runtime failing the round
+          # trip it is known to fail is not news.
+          - { os: macos-latest,      runtime: auto, pocl-source: homebrew, expect: '>=1' }
+          - { os: macos-15-intel,    runtime: auto, pocl-source: homebrew, expect: '>=1' }
           # version has no coverage otherwise: the demo legs that originally
           # proved the asset-resolution path were removed once it was known
           # to work, which left it untested again. Pinning a known-older
@@ -327,6 +378,31 @@ jobs:
               exit 1
               ;;
           esac
+
+      # Mirrors the Tier-1 "Assert the macOS emission contract" step above --
+      # see its comment for why the C consumer cannot stand in for it. Both
+      # copies are needed: Tier 1 covers the conda-forge default on every pull
+      # request, and this one is the only place the Homebrew legs (and the
+      # osx-64 environment on macos-15-intel) get the same assertions at all.
+      - name: Assert the macOS emission contract (preview)
+        if: runner.os == 'macOS' && steps.setup.outputs.runtime-name == 'pocl'
+        shell: bash
+        env:
+          SE_ROOT: ${{ steps.setup.outputs.opencl-root }}
+          SE_INCLUDE_DIR: ${{ steps.setup.outputs.opencl-include-dir }}
+          SE_LIBRARY: ${{ steps.setup.outputs.opencl-library }}
+          SE_LABEL: ${{ matrix.pocl-source || 'auto' }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            "opencl-root=${SE_ROOT}" \
+            "opencl-include-dir=${SE_INCLUDE_DIR}" \
+            "opencl-library=${SE_LIBRARY}" \
+            "opencl-cppflags=${OPENCL_CPPFLAGS}" \
+            "opencl-libs=${OPENCL_LIBS}" \
+            > "${RUNNER_TEMP}/emission.txt"
+          tests/macos-emission-contract.sh --emitted \
+            "${RUNNER_TEMP}/emission.txt" "${SE_LABEL}"
 
   # The action validates and rejects four combinations, but until now none
   # of the four had ever actually been exercised in CI: an unknown
