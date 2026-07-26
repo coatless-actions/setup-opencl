@@ -331,7 +331,15 @@ for lib in "${env_dir}"/lib/libOpenCL*.dylib; do
     [ -e "${lib}" ] || continue
     ln -sfn "${lib}" "${lib_shim}/$(basename "${lib}")"
 done
+# Both spellings, and both are load-bearing. conda's include/ carries an
+# OpenCL -> CL symlink because macOS consumers write <OpenCL/cl.h> while
+# everyone else writes <CL/cl.h>, and CLBlast is one of the former. A shim
+# offering only CL/ does not fail to find a header -- it silently falls
+# through to Apple's framework inside the SDK, so the build then mixes
+# Khronos' cl.h with Apple's cl_gl.h and dies on an undefined
+# CL_EXT_SUFFIX__VERSION_1_0. That is how this was found.
 ln -sfn "${env_dir}/include/CL" "${inc_shim}/CL"
+ln -sfn "${env_dir}/include/CL" "${inc_shim}/OpenCL"
 
 emit opencl-root        "${env_dir}"
 emit opencl-include-dir "${inc_shim}"
