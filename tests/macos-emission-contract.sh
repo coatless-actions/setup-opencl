@@ -17,10 +17,11 @@
 #
 # WHAT IS ASSERTED, AND WHY EACH ONE EXISTS
 #
-# Both assertions are here because the failure they describe was found by a
+# The first two are here because the failure they describe was found by a
 # downstream package breaking, not by anything in this repository -- and in
 # both cases neither this action nor the one composed with it was wrong on its
-# own. They are checks on the seam.
+# own. They are checks on the seam. The third is a check on identity: which
+# PoCL this is, and therefore whether kernels run.
 #
 #  1. The emitted include directory answers BOTH header spellings, and answers
 #     them itself. macOS consumers write <OpenCL/...> and everyone else writes
@@ -42,11 +43,29 @@
 #     scripts/probe.c is C, links no C++ runtime, and could never have seen
 #     it. A negative control below proves the check would actually fire.
 #
+#  3. The PoCL that installed is the one the requested source names, and where
+#     that source is the one whose whole purpose is avoiding LLVM 21, it is
+#     not on LLVM 21. 'auto' resolving to conda-forge is the entire content of
+#     the v1.3.0 release and nothing asserted it: the existing device and
+#     kernel gates cannot, because Homebrew's llvm@21 PoCL passes them --
+#     it compiles this action's trivial probe kernel fine and segfaults on
+#     real work (measured: 4 of 4 runs on a 50x50 elementwise add). So the
+#     assertion is on the property that actually differs, the linked LLVM
+#     major, rather than on a path proving which branch ran: a major version
+#     also catches Homebrew moving onto a good generation, or conda-forge
+#     drifting onto a bad one under a rebuild the pinned version allows.
+#     Scoped by source, because llvm@21 is not a defect on the Homebrew path
+#     -- it is what that path IS, warned about on every run. There the source
+#     name is asserted and the generation only reported.
+#
 # Usage: tests/macos-emission-contract.sh [pocl-source ...]
 #          defaults to running both: homebrew conda-forge
 #        tests/macos-emission-contract.sh --emitted <file> <label>
 #          asserts against an already-captured key=value block instead of
-#          installing anything; <label> only names the source in messages
+#          installing anything. <label> is the source that was REQUESTED, and
+#          it is load-bearing for assertion 3 rather than decoration: 'auto'
+#          is a valid label there and is the case that must come back
+#          conda-forge
 #
 # Note: with no --emitted, this runs the real install script once per source,
 # exactly as tests/macos-install.sh does. The Homebrew path installs formulae
@@ -245,9 +264,79 @@ assert_the_check_can_fail() {
         "${raw_lib_dir}" "$(printf '%s' "${offenders}" | tr '\n' ' ')"
 }
 
+# What a requested source must actually install. Only 'auto' maps to something
+# with a different name, and that mapping is the point: it is action.yml's
+# resolution, restated here so a run that quietly stopped honoring it fails.
+expected_pocl_source() {
+    case "$1" in
+        auto|conda-forge) printf 'conda-forge\n' ;;
+        homebrew)         printf 'homebrew\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+# Identity, not paths: which PoCL is installed and which LLVM it links.
+#
+# Neither can be inferred from anything else asserted in this file. Both
+# sources emit the same shape of include directory and link flags, both
+# produce a loader with an absolute install name, and both enumerate a
+# healthy fp64 device -- the difference between them only shows up inside a
+# real kernel, long after this action has finished and reported success.
+assert_pocl_identity() {
+    local label="$1" emitted="$2"
+    local key expected actual major
+
+    if ! expected="$(expected_pocl_source "${label}")"; then
+        fail "unknown pocl-source label '${label}': there is no defined answer for what that should install, so asserting against it would assert nothing. Use 'auto', 'homebrew' or 'conda-forge'."
+    fi
+
+    for key in pocl-source pocl-llvm-major; do
+        printf '%s\n' "${emitted}" | grep -q "^${key}=" \
+            || fail "[${label}] the emission carries no '${key}' key at all. Either the install script did not emit it or it was not wired through action.yml's outputs -- and an assertion against a key that is absent rather than empty is one that can never fail."
+    done
+
+    actual="$(printf '%s\n' "${emitted}" | sed -n 's/^pocl-source=//p')"
+    if [ "${actual}" != "${expected}" ]; then
+        fail "[${label}] requesting pocl-source '${label}' installed PoCL from '${actual:-(nothing reported)}', expected '${expected}'. Every emitted path still looks correct and a device still enumerates, so nothing else here would have noticed; what changes is whether a kernel runs."
+    fi
+
+    major="$(printf '%s\n' "${emitted}" | sed -n 's/^pocl-llvm-major=//p')"
+    case "${major}" in
+        '') ;;
+        *[!0-9]*)
+            fail "[${label}] pocl-llvm-major is '${major}', which is not a major version number. The install script parses this out of otool's output; a value that is not a bare integer means the parse picked up the wrong thing, and every comparison against it -- including the '!= 21' one below -- would then be meaningless."
+            ;;
+    esac
+
+    if [ "${expected}" = "conda-forge" ]; then
+        # The reason this source exists, restated as a check. Empty is
+        # rejected as hard as 21: install-macos-conda.sh refuses both, so an
+        # empty value here means the refusal did not run or its result never
+        # reached the emission, and "not measured" would otherwise pass a
+        # test written to prove "not 21".
+        [ -n "${major}" ] \
+            || fail "[${label}] pocl-llvm-major is empty, so which LLVM the conda-forge PoCL links was never established. install-macos-conda.sh refuses an unreadable generation outright, so this means the check did not run or its value was lost on the way out -- and an empty string satisfies every '!= 21' comparison there is."
+        [ "${major}" != "21" ] \
+            || fail "[${label}] the conda-forge PoCL links LLVM 21, the one generation this source exists to avoid: LLVM 21's Clang miscompiles the kernel stubs it generates for OpenCL (llvm#161077, fixed in 22 and never backported to 21.1.x). The device will enumerate, this action's own probe kernel will run, and real work will segfault. Revisit the pinned pocl version in scripts/install-macos-conda.sh."
+        printf '  installed conda-forge PoCL, linking LLVM %s (not 21)\n' "${major}"
+    else
+        # Deliberately not asserted. Homebrew's PoCL is built against llvm@21;
+        # that is what this source is, action.yml warns about it on every run,
+        # and failing here would be this repository's own test suite objecting
+        # to a documented, supported choice. The source name above is the
+        # assertion on this path -- it is what proves the branch ran and the
+        # value reached the emission -- and the generation is reported so a
+        # move off llvm@21 is visible in the log the day it happens.
+        printf '  installed Homebrew PoCL, linking LLVM %s (not asserted: llvm@21 is what this source is)\n' \
+            "${major:-(not measured)}"
+    fi
+}
+
 assert_emission() {
     local label="$1" emitted="$2"
     local key root include_dir library cppflags libs loader_real
+
+    assert_pocl_identity "${label}" "${emitted}"
 
     for key in opencl-root opencl-include-dir opencl-library opencl-cppflags opencl-libs; do
         printf '%s\n' "${emitted}" | grep -q "^${key}=" \
@@ -266,7 +355,7 @@ assert_emission() {
     loader_real="$(realpath "${library}")"
     assert_the_check_can_fail "${label}" "${cppflags}" "${root}" "${loader_real}"
 
-    printf 'PASS: %s emits an include directory answering both spellings and link flags that pull in nothing but the loader\n' \
+    printf 'PASS: %s installed the PoCL it names, on an LLVM generation that is allowed for it, and emits an include directory answering both spellings and link flags that pull in nothing but the loader\n' \
         "${label}"
 }
 

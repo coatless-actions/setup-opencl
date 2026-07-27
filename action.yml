@@ -56,6 +56,17 @@ outputs:
   runtime-name:
     description: 'Runtime actually installed: pocl, intel-cpu, apple, or none'
     value: ${{ steps.collect.outputs.runtime-name }}
+  # Read straight from the install step rather than through the collect step,
+  # which exists to merge a value that both the POSIX and the Windows install
+  # script can produce. Neither of these is one: only macOS installs a PoCL,
+  # so there is no second side to choose between. Same treatment the export
+  # step already gives 'sdkroot'.
+  pocl-source:
+    description: 'Where the installed PoCL actually came from on macOS: "homebrew" or "conda-forge". This is the resolved value -- never "auto" -- and it is reported by the install script that ran, not by the step that chose it. Empty on Linux and Windows, and empty for a macOS runtime that installs no PoCL ("apple" or "none")'
+    value: ${{ steps.install.outputs.pocl-source }}
+  pocl-llvm-major:
+    description: 'LLVM major version the macOS PoCL links against, e.g. "19". Measured with otool against the installed libpocl rather than read off a package list, because the generation is a transitive dependency neither pin in this action controls. LLVM 21 miscompiles the kernel stubs Clang generates for OpenCL (llvm#161077), which is why this is worth asserting on: a workflow that compiles kernels can require it not be 21. Empty wherever pocl-source is empty, and empty on the Homebrew path when the linkage could not be read -- empty means "not measured", never "not LLVM 21"'
+    value: ${{ steps.install.outputs.pocl-llvm-major }}
   platform-version:
     description: 'CL_PLATFORM_VERSION of the platform providing the first device'
     value: ${{ steps.probe.outputs.platform-version }}
@@ -356,6 +367,29 @@ runs:
         printf '%s\n' "${output}" | grep -E \
           '^[a-z][a-z0-9-]*=' \
           >> "$GITHUB_OUTPUT"
+
+        # Which source this action *decided* on and which source actually
+        # installed are two different facts, and the whole content of the
+        # v1.3.0 release is that the first one changed. install-macos.sh
+        # decides whether to hand off to the conda-forge script from one
+        # condition on SE_POCL_SOURCE; nothing else confirms it took the
+        # branch it was told to, and on macOS that branch is the difference
+        # between a PoCL that runs kernels and one that enumerates a healthy
+        # fp64 device and then segfaults inside them (llvm#161077). So
+        # compare, and fail rather than warn: quietly installing the runtime
+        # the caller did not ask for is exactly the silent substitution this
+        # check exists to prevent.
+        #
+        # Both sides are empty on Linux, and on any macOS runtime that
+        # installs no PoCL ('apple', 'none'). Empty compares equal to empty
+        # and asserts nothing there, which is correct -- there is no source to
+        # have got wrong.
+        installed_source="$(printf '%s\n' "${output}" | sed -n 's/^pocl-source=//p')"
+        if [ "${installed_source}" != "${SE_POCL_SOURCE}" ]; then
+          echo "::error::This action resolved 'pocl-source' to '${SE_POCL_SOURCE:-(none)}', but the install script reports it installed PoCL from '${installed_source:-(none)}'"
+          echo "The runtime on this runner is not the one the inputs selected. On macOS that is not cosmetic: Homebrew's PoCL is built against llvm@21, whose Clang miscompiles OpenCL kernel stubs (llvm#161077), and conda-forge's is not. Nothing downstream can tell the two apart from the emitted paths alone, so the run stops here."
+          exit 1
+        fi
 
     - name: Install OpenCL (Windows)
       id: install-windows

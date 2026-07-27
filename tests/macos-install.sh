@@ -32,6 +32,20 @@ set -euo pipefail
 runtime="${1:-pocl}"
 pocl_source="${2:-}"
 
+# Validated rather than passed through. A value the install script does not
+# recognize does not fail there -- it falls through to Homebrew on purpose,
+# so a standalone run never stops on a typo -- which means a mistyped
+# 'conda-forge' would install Homebrew's PoCL and this script would then
+# report PASS under the label the caller typed. That is the same silent
+# substitution the emission contract exists to catch, one level up.
+case "${pocl_source}" in
+    ''|homebrew|conda-forge) ;;
+    *)
+        echo "Unknown pocl-source '${pocl_source}': use 'homebrew', 'conda-forge', or leave it empty for the Homebrew path a bare local run takes." >&2
+        exit 1
+        ;;
+esac
+
 expectation="${3:-}"
 if [ -z "${expectation}" ]; then
     expectation=">=1"
@@ -53,8 +67,13 @@ printf '%s\n' "${out}"
 
 value() { printf '%s\n' "${out}" | sed -n "s/^$1=//p"; }
 
+# pocl-source and pocl-llvm-major are in this list for every runtime, not just
+# 'pocl': the install script emits them empty when it installs no PoCL, so a
+# consumer can tell "nothing to report" from "never wired through". A missing
+# key here would be the latter.
 for key in opencl-root opencl-include-dir opencl-library opencl-cppflags \
-           opencl-libs icd-vendors-path runtime-name sdkroot; do
+           opencl-libs icd-vendors-path runtime-name sdkroot \
+           pocl-source pocl-llvm-major; do
     printf '%s\n' "${out}" | grep -q "^${key}=" \
         || fail "missing key '${key}' in the install script's output"
 done

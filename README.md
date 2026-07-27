@@ -49,6 +49,8 @@ Enumerating a device is not the same as being able to use one, so the action als
 | `opencl-library` | Full path to the ICD loader library. |
 | `icd-vendors-path` | Diagnostic; not a portable value. See the note below the table. |
 | `runtime-name` | Runtime actually installed: `pocl`, `intel-cpu`, `apple`, or `none`. |
+| `pocl-source` | Where the installed PoCL came from on macOS: `homebrew` or `conda-forge` — resolved, never `auto`, and reported by the install script that ran rather than by the step that chose it. Empty on Linux and Windows, and empty for a macOS runtime that installs no PoCL. |
+| `pocl-llvm-major` | LLVM major version the macOS PoCL links against, e.g. `19`. Read out of the installed `libpocl` with `otool`. Empty wherever `pocl-source` is empty, and empty on the Homebrew path if the linkage could not be read — empty means *not measured*, never *not LLVM 21*. |
 | `platform-version` | `CL_PLATFORM_VERSION` of the platform providing the first device. |
 | `device-name` | `CL_DEVICE_NAME` of the first device found. |
 | `device-count` | Number of OpenCL devices found. Zero is a valid value, not an error signal. |
@@ -174,6 +176,26 @@ There are two PoCLs to choose between, and the difference is which LLVM each is 
 LLVM 21's Clang miscompiles the kernel stubs it generates for OpenCL — [llvm#161077](https://github.com/llvm/llvm-project/issues/161077), fixed in LLVM 22 and never backported to the 21.1.x line. The result is a runtime that enumerates a healthy, double-precision-capable CPU device and then dies inside real kernels. Measured on Apple silicon against a GPU linear-algebra package's suite: three separate operations exited 139 on Homebrew's PoCL and passed on conda-forge's, with nothing changed between the two runs but `OCL_ICD_VENDORS`. This is not a novel diagnosis — PoCL's own README marks its CUDA backend broken on LLVM 21, and Arch pins `pocl` to `clang20`.
 
 So the action emits a `::warning::` naming the defect whenever it installs Homebrew's PoCL, and both install paths log the LLVM version the installed PoCL actually links so the claim can be checked against the run rather than taken on faith.
+
+Both also report it, as the `pocl-source` and `pocl-llvm-major` outputs above, because a log line is not something a workflow can act on. The generation is the value worth asserting: a source name only says which code path ran, while the LLVM major is the property [llvm#161077](https://github.com/llvm/llvm-project/issues/161077) is actually about, and it keeps working if Homebrew moves onto a good generation or conda-forge drifts onto a bad one. A workflow that compiles kernels can require it:
+
+    - uses: coatless-actions/setup-opencl@v1
+      id: opencl
+    - if: runner.os == 'macOS' && steps.opencl.outputs.runtime-name == 'pocl'
+      shell: bash
+      env:
+        LLVM_MAJOR: ${{ steps.opencl.outputs.pocl-llvm-major }}
+      run: |
+        case "${LLVM_MAJOR}" in
+          21|'')
+            echo "::error::PoCL's LLVM generation here is '${LLVM_MAJOR:-unknown}'"
+            exit 1
+            ;;
+        esac
+
+Rejecting the empty value alongside `21` is the point of that `case`, not defensiveness: an unmeasured generation is not a cleared one, and `!= '21'` on an empty string passes.
+
+Note that `require-kernel: 'true'` cannot substitute for this. Homebrew's `llvm@21` PoCL passes that gate: it compiles and runs the action's trivial probe kernel correctly and only misbehaves on real work, which is what makes it a silent failure rather than a loud one. This action's own CI asserts the pair on every pull request — that a macOS leg leaving `pocl-source` unset comes back `conda-forge`, and that the conda-forge PoCL is not on LLVM 21. The Homebrew legs assert the source only; `llvm@21` is not a defect there, it is what that source is.
 
 **`auto` resolving to `conda-forge` is a behaviour change for existing `@v1` consumers.** `homebrew` was the default only so that this input's arrival changed nothing for anybody, and it is the option known to be broken. What changed is the evidence, not the diagnosis: the conda-forge path had until now only ever run on developer hardware with a full Xcode and twelve cores. It has since gone green on hosted `macos-latest` (arm64) and `macos-15-intel` with `require-kernel: 'true'` — which asserts a kernel builds, launches and returns the right numbers, not merely that a device enumerates — and on a real R package's test suite, where it took macOS from six of ten test scripts segfaulting to none.
 

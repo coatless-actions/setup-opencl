@@ -361,5 +361,15 @@ emit opencl-libs        "-L${lib_shim} -lOpenCL"
 # runner from also being enumerated.
 emit icd-vendors-path   "${env_dir}/etc/OpenCL/vendors"
 emit runtime-name       "pocl"
+# Which source ran and what it linked, so a workflow can assert on both
+# instead of trusting that the handoff in install-macos.sh took the branch it
+# was supposed to. The generation is the one that matters -- a source name
+# only proves which code path executed, while the major version is the
+# property llvm#161077 is about, and it also catches this channel drifting
+# onto a bad generation under a rebuild the pinned version does not exclude.
+# ${llvm_major} is guaranteed non-empty and not 21 by the refusal above; it is
+# emitted as a value rather than a constant so it stays a measurement.
+emit pocl-source        "conda-forge"
+emit pocl-llvm-major    "${llvm_major}"
 # PoCL's LLVM cannot find system headers without SDKROOT.
 emit sdkroot            "${sdk_path}"

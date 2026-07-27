@@ -73,6 +73,14 @@ if [ "${runtime}" = "apple" ]; then
     emit opencl-libs        "-framework OpenCL"
     emit icd-vendors-path   ""
     emit runtime-name       "apple"
+    # Emitted empty rather than omitted, the same way icd-vendors-path is
+    # above. These two answer "which PoCL is installed, and which LLVM does it
+    # link" -- questions with no answer when no PoCL was installed at all --
+    # and a consumer (or tests/macos-emission-contract.sh) has to be able to
+    # tell "this run installed no PoCL" from "the key was never wired
+    # through", which a missing key cannot do.
+    emit pocl-source        ""
+    emit pocl-llvm-major    ""
     emit sdkroot            "${sdk_path}"
     exit 0
 fi
@@ -126,6 +134,10 @@ emit sdkroot            "${sdk_path}"
 if [ "${runtime}" = "none" ]; then
     emit icd-vendors-path ""
     emit runtime-name     "none"
+    # No PoCL was installed, so both are empty -- see the apple branch above
+    # for why they are emitted at all.
+    emit pocl-source      ""
+    emit pocl-llvm-major  ""
 else
     pocl_prefix="$(brew --prefix pocl)"
 
@@ -144,7 +156,20 @@ else
     # from the keg name in the path. install-macos-conda.sh parses the SONAME
     # instead, because conda-forge's carries the version in the file name.
     llvm_major="$(printf '%s' "${llvm_line}" | sed -n 's/.*llvm@\([0-9][0-9]*\).*/\1/p')"
-    if [ -n "${llvm_major}" ] && [ "${llvm_major}" != "21" ]; then
+    if [ -z "${llvm_major}" ]; then
+        # Reported, not refused -- the opposite of what install-macos-conda.sh
+        # does with the same condition, and deliberately so. That source
+        # exists precisely to guarantee "not LLVM 21", so an unknown
+        # generation there is a broken promise and stops the run. Here llvm@21
+        # IS what this source is: action.yml warns about it unconditionally
+        # whenever 'pocl-source: homebrew' is in effect, so an unreadable
+        # generation tells the caller nothing they have not already been told,
+        # and failing their job over a parse would take away a supported
+        # option for a diagnostic. What it does cost is the assertion: an
+        # empty pocl-llvm-major below is "not measured", which no workflow can
+        # check against, so say so where it happens.
+        echo "::warning::Could not determine which LLVM generation Homebrew's PoCL links; otool reported ${llvm_line:-no libLLVM dependency at all}. The 'pocl-llvm-major' output is emitted empty for this run, meaning 'not measured' rather than 'not LLVM 21'. If Homebrew has moved PoCL onto an unversioned llvm keg, the parse in scripts/install-macos.sh needs updating." >&2
+    elif [ "${llvm_major}" != "21" ]; then
         echo "Note: Homebrew's PoCL is now on llvm@${llvm_major}, not llvm@21. The warning action.yml emits for 'pocl-source: homebrew' names llvm@21 specifically and should be re-checked against llvm#161077 before the next release." >&2
     fi
 
@@ -152,4 +177,15 @@ else
     # so exporting OCL_ICD_VENDORS is mandatory rather than optional.
     emit icd-vendors-path "${pocl_prefix}/etc/OpenCL/vendors"
     emit runtime-name     "pocl"
+    # What actually ran, not what was asked for: reaching this line means the
+    # handoff above did not divert, whatever SE_POCL_SOURCE said. That is the
+    # point of emitting it -- 'auto' resolving to conda-forge is a decision
+    # made in action.yml, and only the script that installed something can
+    # report which one did.
+    emit pocl-source      "homebrew"
+    # The measured generation, empty when it could not be read. Which LLVM is
+    # underneath is the property that decides whether kernels run or segfault
+    # (llvm#161077), and unlike the source it is not a branch anyone chose:
+    # it is whatever the formula's dependencies resolved to.
+    emit pocl-llvm-major  "${llvm_major}"
 fi

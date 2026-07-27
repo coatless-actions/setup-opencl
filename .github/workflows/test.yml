@@ -220,25 +220,53 @@ jobs:
       # up once something links C++. Both were found by a downstream package
       # breaking rather than by anything here. This runs the assertions that
       # would have caught them, against the values this run actually emitted.
+      #
+      # The same step also asserts WHICH PoCL this is: that a leg leaving
+      # 'pocl-source' at its default got conda-forge, and that the conda-forge
+      # PoCL is not on LLVM 21. No other check in this workflow can establish
+      # that. Every macOS leg here enumerates a device and the 'kernel' gate
+      # passes on both sources -- Homebrew's llvm@21 PoCL compiles this
+      # action's probe kernel fine and only segfaults on real work -- so
+      # 'device-count', 'kernel' and every emitted path look identical whether
+      # the default resolved the way v1.3.0 says it does or not.
+      #
+      # Conditioned on this leg's own matrix values and never on an output of
+      # the step under test. 'runtime-name == pocl' reads better and was what
+      # this used, but it lets the subject decide whether it gets examined: an
+      # action that reported the wrong runtime-name would skip these
+      # assertions rather than fail them, and a skipped step is green. macOS
+      # resolves 'auto' to pocl, so every macOS leg installs one except the
+      # two that explicitly ask for no PoCL at all.
       - name: Assert the macOS emission contract
-        if: runner.os == 'macOS' && steps.setup.outputs.runtime-name == 'pocl'
+        if: runner.os == 'macOS' && matrix.runtime != 'apple' && matrix.runtime != 'none'
         shell: bash
         env:
           SE_ROOT: ${{ steps.setup.outputs.opencl-root }}
           SE_INCLUDE_DIR: ${{ steps.setup.outputs.opencl-include-dir }}
           SE_LIBRARY: ${{ steps.setup.outputs.opencl-library }}
+          SE_POCL_SOURCE: ${{ steps.setup.outputs.pocl-source }}
+          SE_POCL_LLVM_MAJOR: ${{ steps.setup.outputs.pocl-llvm-major }}
+          # What this leg ASKED for, which is what the assertion is against:
+          # an unset matrix value is what an unconfigured caller passes, and
+          # 'auto' is the case that has to come back conda-forge.
           SE_LABEL: ${{ matrix.pocl-source || 'auto' }}
         run: |
           set -euo pipefail
           # cppflags and libs reach a caller through the job environment, not
           # as step outputs, so the block is reassembled from both channels --
           # which is also the only way to assert what a consumer really sees.
+          # The two pocl-* values come from the action's outputs rather than
+          # from the install script's stdout on purpose: the output is the
+          # channel a consumer reads, so this fails if the emission is right
+          # and the wiring through action.yml is not.
           printf '%s\n' \
             "opencl-root=${SE_ROOT}" \
             "opencl-include-dir=${SE_INCLUDE_DIR}" \
             "opencl-library=${SE_LIBRARY}" \
             "opencl-cppflags=${OPENCL_CPPFLAGS}" \
             "opencl-libs=${OPENCL_LIBS}" \
+            "pocl-source=${SE_POCL_SOURCE}" \
+            "pocl-llvm-major=${SE_POCL_LLVM_MAJOR}" \
             > "${RUNNER_TEMP}/emission.txt"
           tests/macos-emission-contract.sh --emitted \
             "${RUNNER_TEMP}/emission.txt" "${SE_LABEL}"
@@ -380,17 +408,27 @@ jobs:
           esac
 
       # Mirrors the Tier-1 "Assert the macOS emission contract" step above --
-      # see its comment for why the C consumer cannot stand in for it. Both
-      # copies are needed: Tier 1 covers the conda-forge default on every pull
-      # request, and this one is the only place the Homebrew legs (and the
-      # osx-64 environment on macos-15-intel) get the same assertions at all.
+      # see its comment for why the C consumer cannot stand in for it, and for
+      # what the pocl-source and pocl-llvm-major values add. Both copies are
+      # needed: Tier 1 covers the conda-forge default on every pull request,
+      # and this one is the only place the Homebrew legs (and the osx-64
+      # environment on macos-15-intel) get the same assertions at all. On a
+      # Homebrew leg the source is asserted and the LLVM generation only
+      # reported -- llvm@21 is what that source is, and this job is not the
+      # place to fail over a documented, warned-about choice.
+      #
+      # Matrix-driven for the same reason as the Tier-1 copy: an assertion the
+      # subject can switch off is not one. Every macOS leg in this job asks
+      # for 'auto', which resolves to pocl.
       - name: Assert the macOS emission contract (preview)
-        if: runner.os == 'macOS' && steps.setup.outputs.runtime-name == 'pocl'
+        if: runner.os == 'macOS' && matrix.runtime != 'apple' && matrix.runtime != 'none'
         shell: bash
         env:
           SE_ROOT: ${{ steps.setup.outputs.opencl-root }}
           SE_INCLUDE_DIR: ${{ steps.setup.outputs.opencl-include-dir }}
           SE_LIBRARY: ${{ steps.setup.outputs.opencl-library }}
+          SE_POCL_SOURCE: ${{ steps.setup.outputs.pocl-source }}
+          SE_POCL_LLVM_MAJOR: ${{ steps.setup.outputs.pocl-llvm-major }}
           SE_LABEL: ${{ matrix.pocl-source || 'auto' }}
         run: |
           set -euo pipefail
@@ -400,6 +438,8 @@ jobs:
             "opencl-library=${SE_LIBRARY}" \
             "opencl-cppflags=${OPENCL_CPPFLAGS}" \
             "opencl-libs=${OPENCL_LIBS}" \
+            "pocl-source=${SE_POCL_SOURCE}" \
+            "pocl-llvm-major=${SE_POCL_LLVM_MAJOR}" \
             > "${RUNNER_TEMP}/emission.txt"
           tests/macos-emission-contract.sh --emitted \
             "${RUNNER_TEMP}/emission.txt" "${SE_LABEL}"

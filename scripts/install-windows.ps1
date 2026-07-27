@@ -49,7 +49,10 @@
     Assert-FileHash. A cache hit is the one path that does not, because it
     downloads nothing; the expected digest is part of the cache key instead,
     so a changed expectation can never be satisfied by an archive cached
-    under a different one.
+    under a different one. It is also part of the identity stamp each
+    extracted tree carries (see Get-TreeStamp), which is what makes reuse a
+    decision about which release is on disk rather than an inference from a
+    file of the right name being present.
 #>
 
 [CmdletBinding()]
@@ -92,6 +95,54 @@ if (-not $Runtime) { $Runtime = 'intel' }
 
 function Emit([string] $Key, [string] $Value) {
     Write-Output "$Key=$Value"
+}
+
+# Records what a tree was built from, so reuse is a decision about identity
+# rather than an inference from file existence.
+#
+# Both trees below are reused when the files this script needs are already
+# there -- and until now that was the whole test, which cannot tell one
+# release from another. Every file the runtime archive extracts has the same
+# name in every release, so a tree left over from a different tag satisfies
+# the search for intelocl64.dll exactly as well as the right one, and the run
+# then logs "Resolved Intel CPU runtime release: tag=..." for a tag it did not
+# install, registers the wrong DLL machine-wide, and reports success. Nothing
+# downstream can see the difference: the emitted paths are identical.
+#
+# A stamp mismatch is not an error, it is a cache miss -- the tree is rebuilt
+# from what this run actually resolved. The expected SHA-256 is part of the
+# stamp because reuse is the one path that never reaches Assert-FileHash: an
+# archive extracted under one expected digest must not be served to a run
+# expecting a different one. action.yml puts the same values in the Actions
+# cache key for the same reason, but that key only governs a hosted runner's
+# restore step; ${RUNNER_TEMP} surviving between runs on a self-hosted or
+# local runner is governed by nothing else. This mirrors the marker file
+# install-macos-conda.sh writes for its conda environment.
+#
+# Every field a stamp is built from must also be part of that cache key, and
+# today each one is: the SDK and pinned runtime values live in this file,
+# whose hash IS part of the key, and an overriding tag and digest arrive as
+# the 'version' and 'version-sha256' inputs, which are in it too. That is not
+# a coincidence to preserve casually. actions/cache does not re-save on an
+# exact key hit, so a stamp that could differ from the tree the key restores
+# would never be written back -- every run would rebuild, re-download the
+# ~110 MB runtime, and report success while doing it. Adding anything to a
+# stamp that the key does not cover reintroduces exactly that. The one case
+# outside this rule is an upstream asset replaced in place under an unchanged
+# tag, where the API digest moves while the key does not; rebuilding every run
+# is then the correct answer, since the cached tree really is the wrong file.
+function Get-TreeStamp([string] $Dir) {
+    $path = Join-Path $Dir '.setup-opencl-stamp'
+    if (-not (Test-Path $path)) { return '' }
+    $content = Get-Content -Raw -Path $path -ErrorAction SilentlyContinue
+    if (-not $content) { return '' }
+    return $content.Trim()
+}
+
+# Written last, after the tree has been extracted and checked, so a partial
+# or failed install never looks like a complete one.
+function Set-TreeStamp([string] $Dir, [string] $Stamp) {
+    Set-Content -Path (Join-Path $Dir '.setup-opencl-stamp') -Value $Stamp -NoNewline
 }
 
 # Fails the run with this action's ::error:: + remediation contract when a
@@ -237,7 +288,14 @@ function Test-SdkComplete([string] $Dir) {
     (Test-Path (Join-Path $Dir 'bin\OpenCL.dll'))
 }
 
-if (-not (Test-SdkComplete $sdkDir)) {
+# Complete AND from this SDK release. The four files above have the same names
+# in every OpenCL-SDK release, so completeness alone cannot tell one version
+# from another -- a tree extracted from an older $SdkVersion passes it, and
+# the headers and OpenCL.lib that end up on the link line are then not the
+# ones this script says it installed.
+$sdkStamp = "sdk=$SdkVersion sha256=$SdkSha256"
+
+if ((Get-TreeStamp $sdkDir) -ne $sdkStamp -or -not (Test-SdkComplete $sdkDir)) {
     $sdkZip = Join-Path $InstallDir 'sdk.zip'
     Invoke-WebRequest -Uri $SdkUrl -OutFile $sdkZip
     Assert-FileHash -Path $sdkZip -Expected $SdkSha256 -Label "OpenCL SDK archive ($SdkVersion)"
@@ -265,6 +323,8 @@ if (-not (Test-SdkComplete $sdkDir)) {
         Write-Output "The archive layout may have changed for SDK release $SdkVersion. Check https://github.com/KhronosGroup/OpenCL-SDK/releases/tag/$SdkVersion."
         exit 1
     }
+
+    Set-TreeStamp $sdkDir $sdkStamp
 }
 
 $includeDir = Join-Path $sdkDir 'include'
@@ -306,11 +366,23 @@ $rtDir = Join-Path $InstallDir 'oclcpuexp'
 # search below would still find it and mask the regression. Searching
 # first means one code path decides where the ICD is, and the cache gate
 # uses that same answer.
-$found = if (Test-Path $rtDir) {
-    Get-ChildItem -Path $rtDir -Recurse -Filter 'intelocl64.dll' |
-        Select-Object -First 1
-} else {
-    $null
+#
+# The search only runs on a tree whose stamp says it came from the release
+# this run resolved. intelocl64.dll is named the same in every oclcpuexp
+# release, so finding one says nothing about which release it belongs to;
+# without the stamp, a leftover tree from another tag is registered
+# machine-wide while the log above reports the tag that was resolved and
+# never installed. A mismatched tree is discarded rather than extracted over,
+# so nothing from the old layout can survive to be found first.
+$rtStamp = "tag=$RuntimeTag asset=$RuntimeFile sha256=$RuntimeSha256"
+
+$found = $null
+if ((Get-TreeStamp $rtDir) -eq $rtStamp) {
+    $found = Get-ChildItem -Path $rtDir -Recurse -Filter 'intelocl64.dll' |
+             Select-Object -First 1
+} elseif (Test-Path $rtDir) {
+    Write-Host "Discarding the existing runtime tree at '$rtDir': it was not installed from $rtStamp."
+    Remove-Item -Recurse -Force $rtDir
 }
 
 if (-not $found) {
@@ -334,6 +406,8 @@ if (-not $found) {
         Write-Output "The archive layout may have changed in release $RuntimeTag."
         exit 1
     }
+
+    Set-TreeStamp $rtDir $rtStamp
 }
 
 $icd = $found.FullName
